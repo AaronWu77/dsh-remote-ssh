@@ -128,6 +128,14 @@ Passwords, MFA prompts, and first-use host-key confirmation are not bridged into
 - system OpenSSH configuration, SSH Agent, `known_hosts`, and `ProxyJump`.
 - local Visual Studio Code, Cursor, Windsurf, or VSCodium with a compatible Remote SSH extension for native remote file opening.
 
+### Local 0.2 Web profile
+
+This checkout uses pnpm 11.7.0 and the v0.2.4 source tag. Local directory selection uses `uiWorkspace.listDirectory`, and the bundle waits for its search hook through the current `agent-preset-registry` entry. The removed `dsh-client-runtime` package is retained only as a development type dependency, not an installation peer or browser dependency declaration.
+
+Activation on DSH 0.2.0-rc.2 currently fails because the host manager imports the removed `settingsNamespace` export and uses the legacy `SettingsScope` registration API. Keep this bundle disabled on 0.2 until its settings persistence is migrated and real profile startup passes.
+
+Source typechecks, unit tests, and bundle builds do not verify an SSH connection. The legacy native file-link opening adapter still targets `workspaces.openPath`; it is not validated against the 0.2 client. Test remote file operations with a dedicated SSH test directory before relying on them.
+
 See [the design document](docs/design.md) for routing, protocol, permissions, and lifecycle details.
 
 ## Development

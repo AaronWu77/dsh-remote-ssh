@@ -13,7 +13,7 @@ const BASE_ROWS: EntryOptions[] = [
   { id: 'tool-bash', name: '@deepseek-ai/dsh-tool-bash', disabled: true },
   { id: 'tool-pwsh', name: '@deepseek-ai/dsh-tool-pwsh', disabled: false },
   { id: 'tool-fs-search', name: '@deepseek-ai/dsh-tool-fs-search', disabled: true },
-  { id: 'agent-presets', name: '@deepseek-ai/dsh-agent-presets' },
+  { id: 'agent-preset-registry', name: '@deepseek-ai/dsh-agent-preset-registry' },
   { id: 'spill-local', name: '@deepseek-ai/dsh-spill-local' },
   { id: 'directory-picker', name: '@deepseek-ai/dsh-host-directory-picker-auto' },
   { id: 'sandbox-policy', name: '@deepseek-ai/dsh-sandbox-policy', config: {} },
@@ -50,8 +50,8 @@ describe('bundle overlay', () => {
     expect(byId.get('remote-ssh-spill-router')).toMatchObject({ name: 'dsh-remote-ssh/spill' })
     expect(byId.get('remote-ssh-search')).toMatchObject({ name: 'dsh-remote-ssh/search' })
     expect(byId.has('remote-ssh-tool-fs-search')).toBe(false)
-    expect(byId.get('agent-presets')).toMatchObject({
-      name: '@deepseek-ai/dsh-agent-presets',
+    expect(byId.get('agent-preset-registry')).toMatchObject({
+      name: '@deepseek-ai/dsh-agent-preset-registry',
       inject: ['remoteSshSearchHook'],
     })
     expect(byId.get('remote-ssh-shell-default')).toMatchObject({ name: 'dsh-remote-ssh/shell-transparent' })

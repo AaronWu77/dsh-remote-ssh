@@ -15,5 +15,5 @@
     "types": ["node"]
   },
   "include": ["src", "tests", "tsdown.config.ts"],
-  "exclude": ["src/client"]
+  "exclude": ["src/client", "tests/client-entry.spec.ts"]
 }

@@ -23,7 +23,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 }
 
 export const name = 'dsh-remote-ssh-client'
-export const inject = ['slots', 'workspaces', 'sessions', 'locale']
+export const inject = ['slots', 'workspaces', 'sessions', 'locale', 'uiWorkspace']
 
 /** Register the localized settings, workspace flow, and transparent file opener. */
 export function apply(ctx: ClientContext): void {
@@ -39,7 +39,7 @@ export function apply(ctx: ClientContext): void {
   const injected = (): RemoteWorkspaceFlowInjected => ({
     t,
     listLocal: async (path?: string): Promise<RemoteDirectoryListing> => {
-      const listing = await ctx.workspaces.listDirectory(path)
+      const listing = await ctx.uiWorkspace.listDirectory(path)
       const parent = listing.crumbs.length > 1 ? listing.crumbs[listing.crumbs.length - 2]?.path : undefined
       return {
         path: listing.path,

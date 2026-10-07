@@ -125,6 +125,14 @@ Web UI 不桥接密码、MFA 和首次 host-key 确认。请先通过 OpenSSH �
 - 系统 OpenSSH 配置、SSH Agent、`known_hosts` 和 `ProxyJump`。
 - 使用原生远端文件打开方式时，本机需要装有 Visual Studio Code、Cursor、Windsurf 或 VSCodium，以及兼容的 Remote SSH 扩展。
 
+### 本地 0.2 Web profile
+
+此工作副本使用 pnpm 11.7.0 和 v0.2.4 源码标签。本地目录选择通过 `uiWorkspace.listDirectory`，bundle 通过当前的 `agent-preset-registry` 条目等待搜索 hook。已移除的 `dsh-client-runtime` 包只保留为开发时的类型依赖，不再声明为安装 peer 或浏览器依赖。
+
+当前在 DSH 0.2.0-rc.2 中启用会失败：host manager 导入了已移除的 `settingsNamespace`，并使用旧的 `SettingsScope` 注册 API。迁移设置保存逻辑并通过实际 profile 启动验证前，请勿在 0.2 中启用此 bundle。
+
+源码类型检查、单元测试和 bundle 构建不能验证 SSH 连接。原生文件链接打开适配器仍使用旧的 `workspaces.openPath` API，尚未针对 0.2 客户端验证。请先在专用 SSH 测试目录验证远程文件操作，再用于实际项目。
+
 路由、协议、权限与生命周期细节见[设计文档](docs/design.md)。
 
 ## 开发

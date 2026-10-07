@@ -150,7 +150,7 @@
 # Existing/restored sessions cause presets to mount during startup. Hold the
 # roster until the module-load hook is active, so its scoped search tool is
 # parsed through the remote-aware path entry from its first import onward.
-- id: agent-presets
+- id: agent-preset-registry
   inject: [remoteSshSearchHook]
 
 - id: spill-local
