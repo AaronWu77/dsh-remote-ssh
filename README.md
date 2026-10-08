@@ -21,13 +21,13 @@ Choose `LOCAL > project` and ordinary file, search, shell, and background-task t
 - shares one host-scoped SSH/AHP connection across workspaces on the same server;
 - preserves readable Workspace and Session history after a remote mapping is removed, while rejecting new tool calls from the old session.
 
-Remote workspaces currently support POSIX/Linux hosts. Windows SSH hosts are not yet supported.
+Remote workspaces currently support Linux hosts with readable `/proc`, `ps`, `awk`, and an external `kill` executable. Windows and non-Linux POSIX SSH hosts are not supported.
 
 ## Agent Host compatibility
 
 This fork pins the official AHP SDK 1.0.0 and offers its supported protocols, `1.0.0` and `0.9.0`. It does not advertise `0.10.0`, `0.8.0`, or legacy `0.7.x`. An incompatible embedded candidate is stopped before the next candidate starts; a successful host connection remains active until disposal. A real Linux Agent Host negotiated `0.9.0` and passed UTF-8 writes, binary byte-range reads, and terminal execution.
 
-Set manager `protocolVersions: ["0.9.0"]` to restrict negotiation. Changing this list or connection timeouts invalidates host/workspace connection caches. Startup uses one deadline across all candidates. Runtime `shutdownTimeoutMs` controls process-stop grace; owned embedded server data is beneath `remoteRuntimeRoot`, and its live PID and unique data directory are checked before remote process-group cleanup.
+Set manager `protocolVersions: ["0.9.0"]` to restrict negotiation. Changing this list or connection timeouts invalidates host/workspace connection caches. Startup uses one deadline across all candidates; expiry or disposal prevents further candidate and tunnel spawns. Runtime `shutdownTimeoutMs` controls TERM grace and post-KILL settling. Embedded data is beneath `remoteRuntimeRoot`; cleanup validates the leader data directory and retains group-member birth identities through leader exit. Live group members must be gone before cleanup succeeds.
 
 The directory picker shows a localized failure summary and expandable diagnostics. The Web provider accepts `maxErrorCharacters` (default 16384); URL/CLI connection tokens are redacted. See [the fork upgrade guide](UPGRADE.md) before replacing the previous archive.
 
@@ -39,7 +39,7 @@ This editable fork targets DSH 0.2.0-rc.2. Build and install its local archive; 
 pnpm install --ignore-scripts
 pnpm run build
 pnpm pack --pack-destination ./artifacts
-dsh plugin --profile web add file:./artifacts/dsh-remote-ssh-0.2.4-aaron.3.tgz --ignore-scripts
+dsh plugin --profile web add file:./artifacts/dsh-remote-ssh-0.2.4-aaron.4.tgz --ignore-scripts
 dsh web
 ```
 

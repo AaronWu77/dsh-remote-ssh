@@ -129,11 +129,17 @@ export class TransparentShellExecutor extends ShellExecutor {
     })).finally(cleanup)
     let stdoutOffset = 0
     let stderrOffset = 0
-    let spawnFailure: string | undefined
+    let spawnFailure: Buffer | undefined
+    const observedStderr: SubprocessOutputReader = {
+      readFrom: fromByte => {
+        if (spawnFailure === undefined) return collected.stderr.readFrom(fromByte)
+        return { text: spawnFailure.subarray(Math.min(fromByte, spawnFailure.length)).toString('utf8'), nextOffset: spawnFailure.length, lossy: false }
+      },
+    }
     const processHandle: ShellExecution = {
       status: 'running', exitCode: null, signal: null,
       result: () => result,
-      observed: collected,
+      observed: { stdout: collected.stdout, stderr: observedStderr },
       sandbox: { mode: 'danger-full-access', denied: false },
       done: result.then(outcome => {
         processHandle.exitCode = outcome.exitCode
@@ -142,15 +148,16 @@ export class TransparentShellExecutor extends ShellExecutor {
       }, (error: unknown) => {
         processHandle.status = 'killed'
         processHandle.signal = 'SIGTERM'
-        spawnFailure = 'spawn failed: ' + String(error)
+        let detail = 'unprintable provider failure'
+        try { detail = String(error) } catch (formatError) { /* Rejection formatting cannot make done reject. */ }
+        spawnFailure = Buffer.from('spawn failed: ' + detail, 'utf8')
       }),
       readOutput: (): ShellProcessRead => {
         const stdout = collected.stdout.readFrom(stdoutOffset)
-        const stderr = collected.stderr.readFrom(stderrOffset)
+        const stderr = observedStderr.readFrom(stderrOffset)
         stdoutOffset = stdout.nextOffset
         stderrOffset = stderr.nextOffset
-        const error = stderr.text || spawnFailure || ''
-        spawnFailure = undefined
+        const error = stderr.text
         return {
           delta: stdout.text + (error.length === 0 ? '' : (stdout.text.length > 0 && !stdout.text.endsWith('\n') ? '\n' : '') + '[stderr]\n' + error),
           lossy: stdout.lossy || stderr.lossy,

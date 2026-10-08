@@ -21,13 +21,13 @@
 - 同一服务器上的多个工作区共享一个 host 级 SSH/AHP 连接；
 - 删除远端映射后保留可阅读的 Workspace 与 Session 历史，但旧会话不能继续调用工具。
 
-远端工作区目前支持 POSIX/Linux 主机，尚未支持 Windows SSH 主机。
+远端工作区目前支持具有可读 `/proc`、`ps`、`awk` 及外部 `kill` 可执行文件 的 Linux 主机，不支持 Windows 或其他非 Linux POSIX SSH 主机。
 
 ## Agent Host 兼容性
 
 此 fork 固定使用官方 AHP SDK 1.0.0，声明该 SDK 支持的 `1.0.0` 和 `0.9.0` 协议；不声明 `0.10.0`、`0.8.0` 或旧 `0.7.x`。不兼容的嵌入式候选会先停止，再尝试下一候选；成功连接会保留到插件释放。真实 Linux Agent Host 已协商 `0.9.0`，并通过 UTF-8 写入、二进制字节范围读取及终端执行测试。
 
-manager 的 `protocolVersions: ["0.9.0"]` 可限制协商版本。修改版本列表或连接超时会清空 host/workspace 连接缓存。全部候选共用一次启动期限；runtime 的 `shutdownTimeoutMs` 控制停止进程的宽限时间。嵌入式服务器数据位于 `remoteRuntimeRoot` 下，远端进程组清理前会校验存活 PID 及唯一数据目录。
+manager 的 `protocolVersions: ["0.9.0"]` 可限制协商版本。修改版本列表或连接超时会清空 host/workspace 连接缓存。全部候选共用一次启动期限；超时或释放后不会再启动候选或隧道。runtime 的 `shutdownTimeoutMs` 控制 TERM 宽限及 KILL 后等待时间。嵌入式数据位于 `remoteRuntimeRoot` 下；清理会验证组长的数据目录，并在组长退出后保留成员的启动身份。仅在进程组不再有存活成员时报告清理成功。
 
 目录选择器显示本地化错误摘要和可展开详情。Web provider 的 `maxErrorCharacters` 默认值为 16384；URL/CLI 连接令牌会被遮盖。替换旧安装包前，请阅读 [fork 升级指南](UPGRADE.md)。
 
@@ -39,7 +39,7 @@ manager 的 `protocolVersions: ["0.9.0"]` 可限制协商版本。修改版本�
 pnpm install --ignore-scripts
 pnpm run build
 pnpm pack --pack-destination ./artifacts
-dsh plugin --profile web add file:./artifacts/dsh-remote-ssh-0.2.4-aaron.3.tgz --ignore-scripts
+dsh plugin --profile web add file:./artifacts/dsh-remote-ssh-0.2.4-aaron.4.tgz --ignore-scripts
 dsh web
 ```
 

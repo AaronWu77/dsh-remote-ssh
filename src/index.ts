@@ -324,11 +324,13 @@ export class RemoteSshRuntime extends Service {
     }
     const candidates = await this.listEmbeddedAgentHosts()
     for (const [index, codeServerPath] of candidates.entries()) {
+      this.remainingStartup()
       try {
         const url = await this.startEmbeddedAgentHost(codeServerPath, index)
         return await this.connectEndpoint(url)
       } catch (error: unknown) {
         await this.resetSshAttempt()
+        this.remainingStartup()
         diagnostics.push(`embedded ${codeServerPath}: ${connectionDiagnostic(error, this.config.protocolVersions)}`)
       }
     }
@@ -349,6 +351,7 @@ export class RemoteSshRuntime extends Service {
   }
 
   private async startEmbeddedAgentHost(codeServerPath: string, attempt: number): Promise<string> {
+    const timeoutMs = this.remainingStartup()
     const instanceId = `${this.clientId}-${attempt}`
     this.embeddedDataDir = posix.join(this.runtimeRoot, 'server-embedded', instanceId)
     const child = spawn(this.config.sshExecutable, [
@@ -359,13 +362,7 @@ export class RemoteSshRuntime extends Service {
     ], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
     this.stopProcess.set(child, ownSshProcess(child))
     this.embeddedAgentHost = child
-    let remotePort: number
-    try {
-      remotePort = await waitForAgentHostPort(child, this.remainingStartup(), this.lifetime.signal, pid => { this.embeddedPid = pid })
-    } catch (error: unknown) {
-      child.kill()
-      throw error
-    }
+    const remotePort = await waitForAgentHostPort(child, timeoutMs, this.lifetime.signal, pid => { this.embeddedPid = pid })
     const tokenResult = await runCaptured(
       this.config.sshExecutable,
       [...this.config.sshArgs, '-T', this.config.sshTarget, `cat ${quotePosix(posix.join(this.runtimeRoot, 'server-embedded', instanceId, 'data/token'))}`],
@@ -375,14 +372,15 @@ export class RemoteSshRuntime extends Service {
     )
     const token = tokenResult.stdout.trim()
     if (tokenResult.exitCode !== 0 || token.length === 0 || /\s/.test(token)) {
-      child.kill()
       throw new Error(`dsh-remote-ssh: could not read the embedded Agent Host connection token\n${tokenResult.stderr}`)
     }
     return this.openTunnel(remotePort, token)
   }
 
   private async openTunnel(remotePort: number, token: string): Promise<string> {
+    this.remainingStartup()
     const localPort = await reservePort()
+    const timeoutMs = Math.min(this.remainingStartup(), this.config.requestTimeoutMs)
     const tunnel = spawn(this.config.sshExecutable, [
       ...this.config.sshArgs,
       '-T',
@@ -399,7 +397,7 @@ export class RemoteSshRuntime extends Service {
     ], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
     this.stopProcess.set(tunnel, ownSshProcess(tunnel))
     this.tunnel = tunnel
-    await waitForPort(localPort, tunnel, Math.min(this.remainingStartup(), this.config.requestTimeoutMs), this.lifetime.signal)
+    await waitForPort(localPort, tunnel, timeoutMs, this.lifetime.signal)
     return `ws://127.0.0.1:${localPort}?tkn=${encodeURIComponent(token)}`
   }
 
@@ -413,15 +411,24 @@ export class RemoteSshRuntime extends Service {
   private async resetSshAttempt(): Promise<void> {
     const pid = this.embeddedPid
     const dataDir = this.embeddedDataDir
-    this.embeddedPid = undefined
-    this.embeddedDataDir = undefined
     const children = [this.tunnel, this.embeddedAgentHost]
     this.tunnel = undefined
     this.embeddedAgentHost = undefined
-    await Promise.all(children.map(child => child === undefined ? undefined : this.stopProcess.get(child)?.(this.config.shutdownTimeoutMs)))
-    if (pid !== undefined && dataDir !== undefined) {
-      const cleanup = await runCaptured(this.config.sshExecutable, [...this.config.sshArgs, '-T', this.config.sshTarget, buildStopEmbeddedAgentHostCommand(pid, dataDir, this.config.shutdownTimeoutMs)], this.config.requestTimeoutMs, new AbortController().signal, this.config.shutdownTimeoutMs)
-      if (cleanup.exitCode !== 0) throw new Error('dsh-remote-ssh: owned remote Agent Host cleanup failed: ' + cleanup.stderr)
+    try {
+      if (pid !== undefined && dataDir !== undefined) {
+        const cleanup = await runCaptured(
+          this.config.sshExecutable,
+          [...this.config.sshArgs, '-T', this.config.sshTarget, buildStopEmbeddedAgentHostCommand(pid, dataDir, this.config.shutdownTimeoutMs)],
+          this.config.requestTimeoutMs + 2 * this.config.shutdownTimeoutMs,
+          new AbortController().signal,
+          this.config.shutdownTimeoutMs,
+        )
+        if (cleanup.exitCode !== 0) throw new Error('dsh-remote-ssh: owned remote Agent Host cleanup failed: ' + cleanup.stderr)
+      }
+      this.embeddedPid = undefined
+      this.embeddedDataDir = undefined
+    } finally {
+      await Promise.all(children.map(child => child === undefined ? undefined : this.stopProcess.get(child)?.(this.config.shutdownTimeoutMs)))
     }
   }
 }
@@ -509,26 +516,38 @@ async function waitForAgentHostPort(child: ChildProcessWithoutNullStreams, timeo
 }
 
 /**
- * Stop only the SSH session whose live leader owns this instance data directory.
+ * Stop a verified Linux process group, retaining member birth identities after its leader exits.
  * @param pid - PID emitted by the embedded bootstrap.
  * @param dataDir - Unique server-data-dir for that attempt.
- * @param graceMs - Grace before forcefully stopping its process group.
- * @returns The POSIX cleanup command; a mismatched leader is never killed.
+ * @param graceMs - Grace after TERM and bounded settling time after KILL.
+ * @returns A Linux /proc cleanup command; an unverifiable owner or surviving live member fails.
  */
 export function buildStopEmbeddedAgentHostCommand(pid: number, dataDir: string, graceMs: number): string {
   if (!Number.isSafeInteger(pid) || pid <= 1) throw new Error('invalid embedded Agent Host PID')
   return [
     'dsh_pid=' + pid,
     'dsh_data=' + quotePosix(dataDir),
-    'dsh_args=$(ps -o args= -p "$dsh_pid")',
-    'if [ -z "$dsh_args" ]; then exit 0; fi',
-    'case "$dsh_args" in *"$dsh_data"*) ;; *) printf "Agent Host PID owner changed\\n" >&2; exit 1;; esac',
-    'dsh_group=$(ps -o pgid= -p "$dsh_pid" | tr -d " ")',
-    'if [ "$dsh_group" != "$dsh_pid" ]; then printf "Agent Host process group owner changed\\n" >&2; exit 1; fi',
-    'kill -TERM -- "-$dsh_group" 2>/dev/null || true',
+    "dsh_live() { dsh_table=$(ps -eo pid=,pgid=,stat=) || return 1; printf \"%s\\n\" \"$dsh_table\" | awk -v group=\"$dsh_pid\" '$2 == group && $3 !~ /^[ZX]/ { print $1 }'; }",
+    "dsh_birth() { dsh_stat=$(cat \"/proc/$1/stat\" 2>/dev/null) || return 1; dsh_stat=${dsh_stat##*) }; set -- $dsh_stat; case \"$1\" in Z|X) return 1;; esac; [ \"$3\" = \"$dsh_pid\" ] && [ \"$4\" = \"$dsh_pid\" ] || return 1; shift 19; printf \"%s\\n\" \"$1\"; }",
+    "dsh_anchor() { for dsh_entry in $dsh_owned; do dsh_member=${dsh_entry%%:*}; dsh_start=${dsh_entry#*:}; dsh_current=$(dsh_birth \"$dsh_member\") || continue; [ \"$dsh_start\" = \"$dsh_current\" ] && return 0; done; return 1; }",
+    "dsh_members=$(dsh_live) || exit 1",
+    "[ -n \"$dsh_members\" ] || exit 0",
+    "dsh_args=$(ps -o args= -p \"$dsh_pid\")",
+    "case \"$dsh_args\" in *\"$dsh_data\"*) ;; *) printf \"Agent Host PID owner unavailable or changed\\n\" >&2; exit 1;; esac",
+    "dsh_owned=",
+    "for dsh_member in $dsh_members; do dsh_start=$(dsh_birth \"$dsh_member\") || continue; dsh_owned=\"$dsh_owned $dsh_member:$dsh_start\"; done",
+    "if ! dsh_anchor; then printf \"Agent Host process group owner changed\\n\" >&2; exit 1; fi",
+    "if ! env kill -s TERM -- \"-$dsh_pid\" 2>/dev/null; then dsh_members=$(dsh_live) || exit 1; [ -z \"$dsh_members\" ] && exit 0; printf \"Agent Host SIGTERM failed\\n\" >&2; exit 1; fi",
+    "dsh_members=$(dsh_live) || exit 1",
+    "[ -n \"$dsh_members\" ] || exit 0",
     'sleep ' + (graceMs / 1000),
-    'dsh_args=$(ps -o args= -p "$dsh_pid")',
-    'case "$dsh_args" in *"$dsh_data"*) kill -KILL -- "-$dsh_group" 2>/dev/null || true;; esac',
+    "dsh_members=$(dsh_live) || exit 1",
+    "[ -n \"$dsh_members\" ] || exit 0",
+    "if ! dsh_anchor; then printf \"Agent Host surviving group ownership cannot be verified\\n\" >&2; exit 1; fi",
+    "if ! env kill -s KILL -- \"-$dsh_pid\" 2>/dev/null; then dsh_members=$(dsh_live) || exit 1; [ -z \"$dsh_members\" ] && exit 0; printf \"Agent Host SIGKILL failed\\n\" >&2; exit 1; fi",
+    'sleep ' + (graceMs / 1000),
+    "dsh_members=$(dsh_live) || exit 1",
+    "if [ -n \"$dsh_members\" ]; then printf \"Agent Host process group still has live members\\n\" >&2; exit 1; fi",
   ].join('\n')
 }
 

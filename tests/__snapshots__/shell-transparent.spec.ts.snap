@@ -1,0 +1,10 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`transparent shell failure observations > retains the same UTF-8 note for consuming and independent background readers 1`] = `
+{
+  "consuming": "[stderr]
+spawn failed: Error: 无法启动 executable",
+  "nextByte": 44,
+  "observedStderr": "spawn failed: Error: 无法启动 executable",
+}
+`;

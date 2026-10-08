@@ -49,13 +49,13 @@ Stop and report the exact launcher failure if it does not run.
 For the default Web profile:
 
 ```sh
-dsh plugin --profile web add file:/absolute/path/to/dsh-remote-ssh-0.2.4-aaron.3.tgz --ignore-scripts
+dsh plugin --profile web add file:/absolute/path/to/dsh-remote-ssh-0.2.4-aaron.4.tgz --ignore-scripts
 ```
 
 From a Harness source checkout:
 
 ```sh
-pnpm dsh plugin --profile web add file:/absolute/path/to/dsh-remote-ssh-0.2.4-aaron.3.tgz --ignore-scripts
+pnpm dsh plugin --profile web add file:/absolute/path/to/dsh-remote-ssh-0.2.4-aaron.4.tgz --ignore-scripts
 ```
 
 If the user explicitly supplied a local checkout, require all of these files before installation:

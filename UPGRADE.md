@@ -1,4 +1,4 @@
-# Upgrade to 0.2.4-aaron.3
+# Upgrade to 0.2.4-aaron.4
 
 This fork targets DSH 0.2.0-rc.2. Install the immutable local archive, not the upstream npm package. Preserve the previous archive and profile manifest/lockfile/patch before installation; start a verification profile without the live Web listener before activating the update. Restart the live Web profile only during an agreed maintenance window, then refresh the existing GUI URL.
 
@@ -8,7 +8,11 @@ The official SDK dependency is exactly 1.0.0. Its offered protocols are 1.0.0 an
 
 ## Remote runtime data and teardown
 
-Embedded Agent Host data and token lookup use the same per-connection remoteRuntimeRoot. The plugin does not install remote software or delete historical VS Code caches. Failed candidates and disposed connections stop their owned local SSH children and verify the live remote bootstrap PID, unique data directory and process group before stopping the remote group. Remote cleanup failure is reported rather than claiming teardown completed. Standalone detached CLI startup retains its existing idle timeout.
+Embedded Agent Host data and token lookup use the same per-connection remoteRuntimeRoot. The plugin does not install remote software or delete historical VS Code caches. Remote Linux cleanup requires readable /proc, ps, awk and an external kill executable. Failed candidates and disposed connections verify the live leader data directory and capture member PID/start-time identities before TERM. A surviving verified member permits KILL even after the leader exits; cleanup waits and rejects any remaining live members or unverifiable ownership. Local SSH children are stopped and awaited in finally, after remote cleanup. The cleanup command budget includes requestTimeoutMs plus twice shutdownTimeoutMs so the settling phases cannot be cut short by a shorter request timeout. Remote cleanup failure is reported rather than claiming teardown completed. Standalone detached CLI startup retains its existing idle timeout.
+
+## Startup and background failures
+
+Candidate and tunnel startup check the shared deadline and disposal signal before spawning. Expiry or cancellation ends fallback immediately. A rejected local subprocess publishes one persistent UTF-8 failure note for both independent observed streams and consuming readOutput calls; consuming the note does not remove it from background-job observers.
 
 ## Configuration and error responses
 

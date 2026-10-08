@@ -1,6 +1,6 @@
 {
   "name": "dsh-remote-ssh",
-  "version": "0.2.4-aaron.3",
+  "version": "0.2.4-aaron.4",
   "description": "Transparent local and Remote SSH workspaces for DeepSeek Harness",
   "publishConfig": {
     "access": "public",
