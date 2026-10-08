@@ -65,6 +65,17 @@ async function setup() {
 }
 
 describe('RemoteSshFileSystem', () => {
+  it('reads byte ranges without interpreting UTF-8 offsets as characters', async () => {
+    const { ctx, client, fs, local } = await setup()
+    try {
+      const bytes = Buffer.from('A汉字Z')
+      client.nodes.set('file:///srv/project/range.txt', { type: 'file', data: bytes, etag: 'range-1' })
+      const target = await fs.resolve(resolve(local, 'range.txt'))
+      expect(await fs.readByteRange(target, { offset: 1, length: 3 })).toEqual(bytes.subarray(1, 4))
+      expect(await fs.readByteRange(target, { offset: 100, length: 5 })).toHaveLength(0)
+    } finally { await ctx.fiber.dispose() }
+  })
+
   it('resolves through AHP while keeping the local alias out of display paths', async () => {
     const { ctx, fs, local } = await setup()
     const target = await fs.resolve('readme.txt', { cwd: local })

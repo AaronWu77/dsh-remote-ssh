@@ -1,0 +1,5 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`connection diagnostic presentation > renders locale-owned summaries and escaped expandable diagnostics 1`] = `"<div role="alert"><p>No compatible remote Agent Host could be connected.</p><details><summary>Connection details</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:30vh;overflow:auto;font-size:inherit">Agent Host accepts [^0.9.0] &lt;script&gt;token&lt;/script&gt;</pre></details></div>"`;
+
+exports[`connection diagnostic presentation > renders locale-owned summaries and escaped expandable diagnostics 2`] = `"<div role="alert"><p>未能连接兼容的远端 Agent Host</p><details><summary>连接详情</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:30vh;overflow:auto;font-size:inherit">Agent Host accepts [^0.9.0] &lt;script&gt;token&lt;/script&gt;</pre></details></div>"`;

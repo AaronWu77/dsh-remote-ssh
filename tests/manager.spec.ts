@@ -1,24 +1,30 @@
 import { mkdtemp, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { Context } from '@deepseek-ai/cordis'
-import { SettingsProvider } from '@deepseek-ai/dsh-settings'
+import { Context, Service, type Fiber } from '@deepseek-ai/cordis'
+import { createVolatile, updateVolatile, type Volatile } from '@deepseek-ai/cosmokit'
+import type {} from '@deepseek-ai/cordis-plugin-loader'
 import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import RemoteSshManager from '../src/manager.ts'
 import { describe, expect, it } from 'vitest'
 
-class MemorySettings extends SettingsProvider {
-  private storedDocument: Record<string, unknown> = {}
-
-  get writable(): boolean { return true }
-
-  protected load(): Promise<Record<string, unknown>> {
-    return Promise.resolve(structuredClone(this.storedDocument))
+class MemorySettings extends Service {
+  private owner: Fiber | undefined
+  private revision = 0
+  constructor(ctx: Context) { super(ctx, 'settings') }
+  configure(_presentation: { auto: boolean }, owner: Fiber): () => void {
+    this.owner = owner
+    return () => { this.owner = undefined }
   }
-
-  protected persist(namespace: SettingsNamespace, section: Record<string, unknown>): Promise<void> {
-    this.storedDocument = { ...this.storedDocument, [namespace]: structuredClone(section) }
-    return Promise.resolve()
+  describe(): { ns: SettingsNamespace; revision: number }[] {
+    return [{ ns: 'remote-ssh-manager' as SettingsNamespace, revision: this.revision }]
+  }
+  async replace(_namespace: SettingsNamespace, next: Record<string, unknown>, revision: number): Promise<void> {
+    if (revision !== this.revision) throw new Error('revision changed')
+    if (this.owner === undefined) throw new Error('no settings owner')
+    updateVolatile(this.owner.config as Volatile<Record<string, unknown>>, createVolatile(structuredClone(next)))
+    this.revision += 1
+    this.owner.ctx.emit(this.owner, 'loader/volatile-update', [[]])
   }
 }
 
@@ -225,10 +231,14 @@ describe('RemoteSshManager', () => {
       const hostCtx = new Context()
       const sharedRemote = { marker: 'shared-host-runtime' }
       let creations = 0
-      ;(manager as unknown as { createHostContext(server: unknown): Promise<unknown> }).createHostContext = async () => {
+      let disposals = 0
+      const fixtureManager = manager as unknown as { createHostContext(server: unknown): Promise<unknown>; refreshTail: Promise<void> }
+      fixtureManager.createHostContext = async () => {
         creations += 1
+        const ownedCtx = creations === 1 ? hostCtx : new Context()
+        ownedCtx.effect(() => () => { disposals += 1 }, 'host policy test teardown')
         return {
-          ctx: hostCtx,
+          ctx: ownedCtx,
           remote: sharedRemote,
           key: JSON.stringify(['test-devbox', [], 'code', null]),
           server: { id: 'devbox', label: 'Devbox', sshTarget: 'test-devbox' },
@@ -248,6 +258,16 @@ describe('RemoteSshManager', () => {
       const stillShared = await manager.workspaceContext(manager.workspace('project-b'))
       expect(creations).toBe(1)
       expect(stillShared.remote).toBe(sharedRemote)
+      for (const change of [{ protocolVersions: ['0.9.0'] }, { startupTimeoutMs: 12_345 }, { requestTimeoutMs: 23_456 }, { shutdownTimeoutMs: 1_234 }]) {
+        const previousCreations = creations
+        const descriptor = ctx.settings.describe()[0]!
+        await ctx.settings.replace(descriptor.ns, { ...manager.snapshot(), ...change }, descriptor.revision)
+        await fixtureManager.refreshTail
+        const reconnected = await manager.workspaceContext(manager.workspace('project-b'))
+        expect(creations).toBe(previousCreations + 1)
+        expect(disposals).toBe(previousCreations)
+        expect(reconnected).not.toBe(stillShared)
+      }
       expect(() => manager.route(undefined, resolve(root, 'project-a'))).toThrow(/no longer configured/)
     } finally {
       await ctx.fiber.dispose()

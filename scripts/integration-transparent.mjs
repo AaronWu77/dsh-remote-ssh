@@ -1,8 +1,8 @@
 import { resolve } from 'node:path'
-import { Context } from '@deepseek-ai/cordis'
+import { Context, Service } from '@deepseek-ai/cordis'
+import { updateVolatile } from '@deepseek-ai/cosmokit'
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
-import { SettingsProvider } from '@deepseek-ai/dsh-settings'
 import RemoteSshManager from '../lib/manager.js'
 import TransparentFileSystem from '../lib/router-fs.js'
 import TransparentSubprocessRuntime from '../lib/router-subprocess.js'
@@ -17,12 +17,16 @@ if (!sshTarget || !remoteWorkspace) {
 const local = new Context()
 const ctx = new Context()
 
-class MemorySettings extends SettingsProvider {
-  storedDocument = {}
-  get writable() { return true }
-  async load() { return structuredClone(this.storedDocument) }
-  async persist(namespace, section) {
-    this.storedDocument = { ...this.storedDocument, [namespace]: structuredClone(section) }
+class MemorySettings extends Service {
+  owner
+  revision = 0
+  constructor(ctx) { super(ctx, 'settings') }
+  configure(_options, owner) { this.owner = owner; return () => { this.owner = undefined } }
+  describe() { return [{ ns: 'remote-ssh-manager', revision: this.revision }] }
+  async replace(_namespace, values, revision) {
+    if (revision !== this.revision || this.owner === undefined) throw new Error('settings owner or revision changed')
+    updateVolatile(this.owner.config, structuredClone(values))
+    this.revision += 1
   }
 }
 
@@ -126,15 +130,16 @@ try {
   const fifoCheckStdout = fifoCheck.collected.stdout.readFrom(0)
   const localPackage = await ctx.fs.readText(await ctx.fs.resolve('package.json', { cwd: process.cwd() }))
   const result = { sharedHostRuntime, subprocessSshFallbacks, seedText, outcome, stdout, stderr, stdinOutcome, stdinStdout, pipeOutcome, pipeStdout, cancelledPipeOutcome, fifoCheckOutcome, fifoCheckStdout, localPackageName: JSON.parse(localPackage).name }
-  const shell = await ctx.shell.run(ctx.shell.resolve({
+  const shell = await (await ctx.shell.execute(ctx.shell.resolve({
     command: 'printf "shell-host=%s\\n" "$(hostname)"',
     workdir: alias,
     sandboxPolicy: { mode: 'danger-full-access', workspaceRoot: alias },
-  }))
+  }))).result()
   result.shell = shell
   const terminal = await ctx.subprocess.spawnTerminal({
     argv: ['bash', '-lc', 'printf "terminal-host=%s\\n" "$(hostname)"; exit 6'],
     cwd: alias,
+    terminalType: 'xterm-256color',
     rows: 30,
     cols: 100,
     graceMs: 1_000,

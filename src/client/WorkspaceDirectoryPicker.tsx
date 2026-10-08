@@ -3,6 +3,7 @@ import type { ReactElement } from 'react'
 import type { RemoteDirectoryListing } from './api.ts'
 import { button, card, dim, primary, row, singleLineInput } from './styles.ts'
 import type { Translate } from './types.ts'
+import { ConnectionErrorNotice } from './ConnectionErrorNotice.tsx'
 
 export interface WorkspaceDirectoryPickerProps {
   t: Translate
@@ -20,7 +21,7 @@ export function WorkspaceDirectoryPicker(props: WorkspaceDirectoryPickerProps): 
   const [listing, setListing] = useState<RemoteDirectoryListing>()
   const [draft, setDraft] = useState('')
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
+  const [error, setError] = useState<unknown>('')
   const requestGeneration = useRef(0)
 
   const browse = async (path?: string): Promise<void> => {
@@ -33,7 +34,7 @@ export function WorkspaceDirectoryPicker(props: WorkspaceDirectoryPickerProps): 
       setListing(next)
       setDraft(next.path)
     } catch (reason) {
-      if (generation === requestGeneration.current) setError(String(reason))
+      if (generation === requestGeneration.current) setError(reason)
     } finally {
       if (generation === requestGeneration.current) setLoading(false)
     }
@@ -64,7 +65,7 @@ export function WorkspaceDirectoryPicker(props: WorkspaceDirectoryPickerProps): 
         {!loading && listing?.entries.length === 0 ? <p style={{ ...dim, padding: 8 }}>{props.t('directoryEmpty')}</p> : null}
         {loading ? <p style={{ ...dim, padding: 8 }}>{props.t('directoryLoading')}</p> : null}
       </div>
-      {error ? <p role="alert" style={dim}>{error}</p> : null}
+      <ConnectionErrorNotice error={error} t={props.t} />
       <div style={{ ...row, justifyContent: 'flex-end' }}>
         <button style={button} onClick={props.onCancel}>{props.t('cancel')}</button>
         <button style={primary} disabled={loading || listing === undefined} onClick={() => { if (listing !== undefined) props.onPick(listing.path) }}>{props.t('selectCurrentFolder')}</button>

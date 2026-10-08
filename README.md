@@ -23,12 +23,23 @@ Choose `LOCAL > project` and ordinary file, search, shell, and background-task t
 
 Remote workspaces currently support POSIX/Linux hosts. Windows SSH hosts are not yet supported.
 
+## Agent Host compatibility
+
+This fork pins the official AHP SDK 1.0.0 and offers its supported protocols, `1.0.0` and `0.9.0`. It does not advertise `0.10.0`, `0.8.0`, or legacy `0.7.x`. An incompatible embedded candidate is stopped before the next candidate starts; a successful host connection remains active until disposal. A real Linux Agent Host negotiated `0.9.0` and passed UTF-8 writes, binary byte-range reads, and terminal execution.
+
+Set manager `protocolVersions: ["0.9.0"]` to restrict negotiation. Changing this list or connection timeouts invalidates host/workspace connection caches. Startup uses one deadline across all candidates. Runtime `shutdownTimeoutMs` controls process-stop grace; owned embedded server data is beneath `remoteRuntimeRoot`, and its live PID and unique data directory are checked before remote process-group cleanup.
+
+The directory picker shows a localized failure summary and expandable diagnostics. The Web provider accepts `maxErrorCharacters` (default 16384); URL/CLI connection tokens are redacted. See [the fork upgrade guide](UPGRADE.md) before replacing the previous archive.
+
 ## Install
 
-Install the published bundle into the Web profile:
+This editable fork targets DSH 0.2.0-rc.2. Build and install its local archive; the npm registry package is the upstream release, not this fork:
 
 ```sh
-dsh plugin --profile web add dsh-remote-ssh
+pnpm install --ignore-scripts
+pnpm run build
+pnpm pack --pack-destination ./artifacts
+dsh plugin --profile web add file:./artifacts/dsh-remote-ssh-0.2.4-aaron.3.tgz --ignore-scripts
 dsh web
 ```
 
@@ -130,11 +141,16 @@ Passwords, MFA prompts, and first-use host-key confirmation are not bridged into
 
 ### Local 0.2 Web profile
 
-This checkout uses pnpm 11.7.0 and the v0.2.4 source tag. Local directory selection uses `uiWorkspace.listDirectory`, and the bundle waits for its search hook through the current `agent-preset-registry` entry. The removed `dsh-client-runtime` package is retained only as a development type dependency, not an installation peer or browser dependency declaration.
+The fork uses pnpm 11.7.0 and DSH 0.2.0-rc.2 peers. Settings are stored through the manager’s volatile profile configuration and `settings.replace`, without replacing the running manager or its Session bindings. Local directory selection uses `uiWorkspace.listDirectory`. File resources use the address-owning Session and `sidebarRight.openResource`, with built-in preview on native-open failure.
 
-Activation on DSH 0.2.0-rc.2 currently fails because the host manager imports the removed `settingsNamespace` export and uses the legacy `SettingsScope` registration API. Keep this bundle disabled on 0.2 until its settings persistence is migrated and real profile startup passes.
+The PTC interpreter uses preserved local filesystem and subprocess providers. Its control pipe and bootstrap paths cannot run through AHP. Calls made through `tools` still use the routed providers; direct Node filesystem or process imports remain local. Restart the existing Web service after installation; refreshing a page alone does not load a new profile bundle.
 
-Source typechecks, unit tests, and bundle builds do not verify an SSH connection. The legacy native file-link opening adapter still targets `workspaces.openPath`; it is not validated against the 0.2 client. Test remote file operations with a dedicated SSH test directory before relying on them.
+## Known Limitations and Deferred Work
+
+- No real SSH target was provided for this adaptation. SSH deployment, remote interactive GUI terminals, native-editor launch, and the optional TUI adapter require target-specific validation. Automatic terminal-environment discovery currently follows the local host; remote terminals require POSIX shell arguments.
+- AHP 0.7 reads whole resources. Byte-range reads therefore download the complete resource under `maxReadBytes` (64 MiB by default), then slice it.
+- Remote control pipes are unsupported. Remote workspaces currently require POSIX/Linux hosts.
+- Source checks and non-listening profile startup do not validate the rendered GUI or a remote connection.
 
 See [the design document](docs/design.md) for routing, protocol, permissions, and lifecycle details.
 

@@ -6,6 +6,7 @@ import { load } from 'js-yaml'
 import { describe, expect, it } from 'vitest'
 
 const BASE_ROWS: EntryOptions[] = [
+  { id: 'ptc-runtime', name: '@deepseek-ai/dsh-ptc-runtime-node' },
   { id: 'subprocess', name: '@deepseek-ai/dsh-subprocess-local' },
   { id: 'fs-sandbox', name: '@deepseek-ai/dsh-fs-sandbox' },
   { id: 'bash-sandbox', name: '@deepseek-ai/dsh-bash-sandbox', disabled: true },
@@ -32,6 +33,10 @@ describe('bundle overlay', () => {
     const byId = new Map(rows.map(row => [row.id, row]))
 
     expect(warnings).toEqual([])
+    expect(byId.get('ptc-runtime')?.isolate?.subprocess).toBe('remote-ssh/local-subprocess')
+    expect(byId.get('ptc-runtime')?.isolate?.fs).toBe('remote-ssh/local-fs')
+    expect(byId.get('remote-ssh-local-world')?.isolate?.fs).toBe('remote-ssh/local-fs')
+    expect(byId.get('remote-ssh-local-world')?.isolate?.subprocess).toBe('remote-ssh/local-subprocess')
     expect(byId.get('subprocess')).toMatchObject({ name: '@deepseek-ai/dsh-subprocess-local', disabled: true })
     expect(byId.get('fs-sandbox')).toMatchObject({ name: '@deepseek-ai/dsh-fs-sandbox', disabled: true })
     expect(byId.get('bash-sandbox')).toMatchObject({ name: '@deepseek-ai/dsh-bash-sandbox', disabled: true })

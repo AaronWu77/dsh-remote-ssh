@@ -4,17 +4,17 @@ import { mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path'
 import { posix } from 'node:path'
-import { Context, Service } from '@deepseek-ai/cordis'
+import { Context, Service, type Fiber, type Volatile } from '@deepseek-ai/cordis'
 import type { FileSystem } from '@deepseek-ai/dsh-fs'
 import type { ShellExecutor } from '@deepseek-ai/dsh-shell'
-import { settingsNamespace } from '@deepseek-ai/dsh-settings'
-import type { SettingsScope } from '@deepseek-ai/dsh-settings'
+import type {} from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-workspace'
 import type { WorkspaceRegistry } from '@deepseek-ai/dsh-workspace'
 import z from '@deepseek-ai/schemastery'
 import RemoteSshFileSystem from './fs.ts'
 import RemoteSshRuntime, { fileUriFromPosixPath, posixPathFromFileUri, WorkspacePathMapper } from './index.ts'
 import RemoteSshShellExecutor from './shell.ts'
+import { DSH_AHP_PROTOCOL_VERSIONS, validateProtocolVersions } from './ahp-compat.ts'
 
 /** One SSH destination visible in Settings and workspace selection. */
 export interface RemoteSshServer {
@@ -53,6 +53,9 @@ export interface Config {
   openFileDownloadMaxBytes?: number
   startupTimeoutMs?: number
   requestTimeoutMs?: number
+  shutdownTimeoutMs?: number
+  /** SDK-supported protocol subset, in negotiation preference order. */
+  protocolVersions?: string[]
 }
 
 interface ResolvedConfig {
@@ -65,6 +68,8 @@ interface ResolvedConfig {
   openFileDownloadMaxBytes: number
   startupTimeoutMs: number
   requestTimeoutMs: number
+  shutdownTimeoutMs: number
+  protocolVersions: string[]
 }
 
 export interface RemoteWorkspaceRoute {
@@ -119,7 +124,7 @@ export interface RemoteDirectoryListing {
   entries: RemoteDirectoryEntry[]
 }
 
-const SETTINGS_NAMESPACE = settingsNamespace('remote-ssh')
+const SETTINGS_ENTRY_ID = 'remote-ssh-manager'
 const ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/
 
 const serverSchema: z<RemoteSshServer> = z.object({
@@ -153,7 +158,7 @@ declare module '@deepseek-ai/cordis' {
 export class RemoteSshManager extends Service {
   static inject = ['settings']
 
-  static Config: z<Config> = z.object({
+  static Config = z.object({
     aliasRoot: z.string().default(resolve(process.env.DSH_HOME ?? resolve(process.env.USERPROFILE ?? '.', '.dsh'), 'remote-ssh', 'workspaces')),
     sshConfigFile: z.string(),
     servers: z.array(serverSchema).default([]),
@@ -163,11 +168,12 @@ export class RemoteSshManager extends Service {
     openFileDownloadMaxBytes: z.number().default(64 * 1024 * 1024),
     startupTimeoutMs: z.number().default(600_000),
     requestTimeoutMs: z.number().default(30_000),
-  })
+    shutdownTimeoutMs: z.number().default(3_000),
+    protocolVersions: z.array(z.string()).default([...DSH_AHP_PROTOCOL_VERSIONS]),
+  }).required().volatile()
 
-  private readonly entry: ResolvedConfig
+  private readonly liveConfig: Volatile<Config>
   private current: ResolvedConfig
-  private settings: SettingsScope<Config> | undefined
   private readonly routes = new Map<string, RemoteWorkspaceRoute>()
   private readonly routeByWorkspaceId = new Map<string, RemoteWorkspaceRoute>()
   private readonly remoteAliases = new Set<string>()
@@ -183,12 +189,12 @@ export class RemoteSshManager extends Service {
   private refreshTail: Promise<void> = Promise.resolve()
   private readonly initialRefresh: Promise<void>
 
-  constructor(ctx: Context, config: Config) {
+  constructor(ctx: Context, config: Volatile<Config>) {
     super(ctx, 'remoteSshManager')
-    this.entry = config as ResolvedConfig
-    this.current = this.entry
-    this.validate(this.entry)
-    this.initialRefresh = this.queueRefresh(this.entry)
+    this.liveConfig = config
+    this.current = config.get() as ResolvedConfig
+    this.validate(this.current)
+    this.initialRefresh = this.queueRefresh(this.current)
 
     ctx.inject(['workspaceRegistry'], workspaceCtx => {
       this.workspaceRegistry = workspaceCtx.workspaceRegistry
@@ -198,18 +204,12 @@ export class RemoteSshManager extends Service {
       }, 'Remote SSH workspace registry attachment')
     })
 
-    const scope = ctx.settings.register(SETTINGS_NAMESPACE, RemoteSshManager.Config, {
-      base: this.entry,
-      applies: 'live',
-      validate: value => { this.validate(value as ResolvedConfig) },
+    ctx.effect(() => ctx.settings.configure({ auto: false }, ctx.fiber), 'Remote SSH settings presentation')
+    const manager = this
+    ctx.on('loader/volatile-update', function (this: Fiber) {
+      if (this !== ctx.fiber) return
+      void manager.queueRefresh(manager.liveConfig.get() as ResolvedConfig).catch(error => { ctx.logger.error(error) })
     })
-    this.settings = scope
-    void this.queueRefresh(scope.get() as ResolvedConfig)
-    const unwatch = scope.watch(next => this.queueRefresh(next as ResolvedConfig))
-    ctx.effect(() => () => {
-      unwatch()
-      if (this.settings === scope) this.settings = undefined
-    }, 'Remote SSH settings watch')
 
     ctx.effect(() => async () => {
       await this.refreshTail
@@ -495,6 +495,7 @@ export class RemoteSshManager extends Service {
 
   private async publish(config: ResolvedConfig): Promise<void> {
     this.validate(config)
+    const policyChanged = connectionPolicyKey(this.current) !== connectionPolicyKey(config)
     await mkdir(resolve(tmpdir(), 'dsh-ssh'), { recursive: true })
     const servers = new Map(config.servers.map(server => [server.id, server]))
     const nextRoutes = new Map<string, RemoteWorkspaceRoute>()
@@ -515,7 +516,7 @@ export class RemoteSshManager extends Service {
     for (const [id, pending] of this.contexts) {
       const previous = this.routeByWorkspaceId.get(id)
       const next = nextById.get(id)
-      if (previous === undefined || next === undefined || routeRuntimeKey(previous) !== routeRuntimeKey(next)) {
+      if (policyChanged || previous === undefined || next === undefined || routeRuntimeKey(previous) !== routeRuntimeKey(next)) {
         const settled = await Promise.resolve(pending).catch(() => undefined)
         if (settled !== undefined) await settled.ctx.fiber.dispose()
         this.contexts.delete(id)
@@ -525,7 +526,7 @@ export class RemoteSshManager extends Service {
       const id = key.slice(0, key.lastIndexOf(':'))
       const previous = this.routeByWorkspaceId.get(id)
       const next = nextById.get(id)
-      if (previous === undefined || next === undefined || routeRuntimeKey(previous) !== routeRuntimeKey(next)) {
+      if (policyChanged || previous === undefined || next === undefined || routeRuntimeKey(previous) !== routeRuntimeKey(next)) {
         const settled = await Promise.resolve(pending).catch(() => undefined)
         if (settled !== undefined) await settled.ctx.fiber.dispose()
         this.shellContexts.delete(key)
@@ -534,7 +535,7 @@ export class RemoteSshManager extends Service {
     for (const [id, pending] of this.hosts) {
       const next = servers.get(id)
       const settled = await Promise.resolve(pending).catch(() => undefined)
-      if (next === undefined || settled === undefined || settled.key !== serverRuntimeKey(next)) {
+      if (policyChanged || next === undefined || settled === undefined || settled.key !== serverRuntimeKey(next)) {
         if (settled !== undefined) await this.disposeHost(settled)
         this.hosts.delete(id)
       }
@@ -639,6 +640,7 @@ export class RemoteSshManager extends Service {
 
   private async createHostContext(server: RemoteSshServer): Promise<RemoteHostContext> {
     const child = new Context()
+    const policy = this.current
     const transport = this.transportFor(server)
     try {
       await child.plugin(RemoteSshRuntime, {
@@ -647,8 +649,10 @@ export class RemoteSshManager extends Service {
         sshArgs: transport.args,
         remoteCodeCommand: server.remoteCodeCommand ?? 'code',
         remoteAccessRoot: '/',
-        startupTimeoutMs: this.current.startupTimeoutMs,
-        requestTimeoutMs: this.current.requestTimeoutMs,
+        startupTimeoutMs: policy.startupTimeoutMs,
+        requestTimeoutMs: policy.requestTimeoutMs,
+        shutdownTimeoutMs: policy.shutdownTimeoutMs,
+        protocolVersions: policy.protocolVersions,
       })
       return { ctx: child, remote: child.remoteSsh, key: serverRuntimeKey(server), server, transport }
     } catch (error) {
@@ -683,9 +687,10 @@ export class RemoteSshManager extends Service {
   }
 
   private async replaceSettings(next: ResolvedConfig): Promise<void> {
-    if (this.settings === undefined) throw new Error('dsh-remote-ssh: settings service is unavailable')
-    await this.settings.replace(next)
-    await this.refreshTail
+    const descriptor = this.ctx.settings.describe().find(row => row.ns === SETTINGS_ENTRY_ID)
+    if (descriptor === undefined) throw new Error('dsh-remote-ssh: remote-ssh-manager profile settings are unavailable')
+    await this.ctx.settings.replace(descriptor.ns, next, descriptor.revision)
+    await this.queueRefresh(this.liveConfig.get() as ResolvedConfig)
   }
 
   private validate(config: ResolvedConfig): void {
@@ -696,6 +701,8 @@ export class RemoteSshManager extends Service {
     if (!Number.isSafeInteger(config.openFileDownloadMaxBytes) || config.openFileDownloadMaxBytes <= 0) throw new Error('dsh-remote-ssh: openFileDownloadMaxBytes must be a positive integer')
     if (!Number.isSafeInteger(config.startupTimeoutMs) || config.startupTimeoutMs <= 0) throw new Error('dsh-remote-ssh: startupTimeoutMs must be a positive integer')
     if (!Number.isSafeInteger(config.requestTimeoutMs) || config.requestTimeoutMs <= 0) throw new Error('dsh-remote-ssh: requestTimeoutMs must be a positive integer')
+    if (!Number.isSafeInteger(config.shutdownTimeoutMs) || config.shutdownTimeoutMs <= 0) throw new Error('dsh-remote-ssh: shutdownTimeoutMs must be a positive integer')
+    validateProtocolVersions(config.protocolVersions)
     const serverIds = new Set<string>()
     for (const server of config.servers) {
       if (!ID_PATTERN.test(server.id) || serverIds.has(server.id)) throw new Error(`dsh-remote-ssh: invalid or duplicate server id '${server.id}'`)
@@ -716,6 +723,10 @@ export class RemoteSshManager extends Service {
       workspaceIds.add(workspace.id)
     }
   }
+}
+
+function connectionPolicyKey(config: ResolvedConfig): string {
+  return JSON.stringify([config.protocolVersions, config.startupTimeoutMs, config.requestTimeoutMs, config.shutdownTimeoutMs])
 }
 
 function serverRuntimeKey(server: RemoteSshServer): string {

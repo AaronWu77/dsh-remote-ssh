@@ -8,7 +8,7 @@ Install `dsh-remote-ssh` into the requested DeepSeek Harness profile, preserve u
 
 ## Defaults
 
-- **Package:** install `dsh-remote-ssh` from the configured npm registry. Use a local checkout only when the user explicitly supplies one for development.
+- **Package:** this fork targets DSH 0.2.0-rc.2. Build its editable checkout and install the resulting local `.tgz`; the npm registry package remains the upstream release. Do not substitute it for the fork.
 - **Profile:** use the user-named profile; otherwise use `web`.
 - **Launcher:** prefer an installed `dsh`. From a DeepSeek Harness source checkout, run commands in that checkout and replace `dsh` with `pnpm dsh`.
 - **SSH configuration:** use the platform's default user and system OpenSSH files unless the user supplies a custom absolute path.
@@ -49,13 +49,13 @@ Stop and report the exact launcher failure if it does not run.
 For the default Web profile:
 
 ```sh
-dsh plugin --profile web add dsh-remote-ssh
+dsh plugin --profile web add file:/absolute/path/to/dsh-remote-ssh-0.2.4-aaron.3.tgz --ignore-scripts
 ```
 
 From a Harness source checkout:
 
 ```sh
-pnpm dsh plugin --profile web add dsh-remote-ssh
+pnpm dsh plugin --profile web add file:/absolute/path/to/dsh-remote-ssh-0.2.4-aaron.3.tgz --ignore-scripts
 ```
 
 If the user explicitly supplied a local checkout, require all of these files before installation:
@@ -222,7 +222,7 @@ Do not delete SSH config, keys, `known_hosts`, remote files, workspace aliases, 
 
 ## Failure handling
 
-- **Package not found:** confirm the registry is `https://registry.npmjs.org/` and retry the exact package name `dsh-remote-ssh`.
+- **Package not found:** verify the local archive path and build this fork with its matching lockfile. Do not replace it with the upstream registry package.
 - **Bundle composition failure:** run `dsh plugin --profile <profile> why dsh-remote-ssh`; do not remove unrelated plugins.
 - **SSH authentication failure:** ask the user to make ordinary non-interactive OpenSSH access work first.
 - **Host key failure:** stop; never use `StrictHostKeyChecking=no` as a workaround.

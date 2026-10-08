@@ -2,6 +2,11 @@
 # ordinary: fs, bash, pwsh, glob, grep, and jobs select an execution world from
 # the workspace cwd instead of exposing remote_* alternatives.
 
+- id: ptc-runtime
+  isolate:
+    fs: remote-ssh/local-fs
+    subprocess: remote-ssh/local-subprocess
+
 - insert:
     # Bare package row makes the dsh.client manifest discoverable. Its node
     # half is intentionally empty; provider rows below stay independently HMR-able.
@@ -14,9 +19,9 @@
       name: cordis:group
       group: true
       isolate:
-        fs: true
+        fs: remote-ssh/local-fs
         spillStore: true
-        subprocess: true
+        subprocess: remote-ssh/local-subprocess
       config:
         - id: local-subprocess
           name: '@deepseek-ai/dsh-subprocess-local'

@@ -23,12 +23,23 @@
 
 远端工作区目前支持 POSIX/Linux 主机，尚未支持 Windows SSH 主机。
 
+## Agent Host 兼容性
+
+此 fork 固定使用官方 AHP SDK 1.0.0，声明该 SDK 支持的 `1.0.0` 和 `0.9.0` 协议；不声明 `0.10.0`、`0.8.0` 或旧 `0.7.x`。不兼容的嵌入式候选会先停止，再尝试下一候选；成功连接会保留到插件释放。真实 Linux Agent Host 已协商 `0.9.0`，并通过 UTF-8 写入、二进制字节范围读取及终端执行测试。
+
+manager 的 `protocolVersions: ["0.9.0"]` 可限制协商版本。修改版本列表或连接超时会清空 host/workspace 连接缓存。全部候选共用一次启动期限；runtime 的 `shutdownTimeoutMs` 控制停止进程的宽限时间。嵌入式服务器数据位于 `remoteRuntimeRoot` 下，远端进程组清理前会校验存活 PID 及唯一数据目录。
+
+目录选择器显示本地化错误摘要和可展开详情。Web provider 的 `maxErrorCharacters` 默认值为 16384；URL/CLI 连接令牌会被遮盖。替换旧安装包前，请阅读 [fork 升级指南](UPGRADE.md)。
+
 ## 安装
 
-把已发布 bundle 安装到 Web profile：
+此可编辑 fork 对应 DSH 0.2.0-rc.2。请构建并安装本地归档；npm registry 中的是上游版本，不包含此 fork 的适配：
 
 ```sh
-dsh plugin --profile web add dsh-remote-ssh
+pnpm install --ignore-scripts
+pnpm run build
+pnpm pack --pack-destination ./artifacts
+dsh plugin --profile web add file:./artifacts/dsh-remote-ssh-0.2.4-aaron.3.tgz --ignore-scripts
 dsh web
 ```
 
@@ -127,11 +138,16 @@ Web UI 不桥接密码、MFA 和首次 host-key 确认。请先通过 OpenSSH �
 
 ### 本地 0.2 Web profile
 
-此工作副本使用 pnpm 11.7.0 和 v0.2.4 源码标签。本地目录选择通过 `uiWorkspace.listDirectory`，bundle 通过当前的 `agent-preset-registry` 条目等待搜索 hook。已移除的 `dsh-client-runtime` 包只保留为开发时的类型依赖，不再声明为安装 peer 或浏览器依赖。
+此 fork 使用 pnpm 11.7.0，安装 peer 对应 DSH 0.2.0-rc.2。设置通过 manager 的 volatile profile 配置和 `settings.replace` 保存，不替换运行中的 manager，也不清除其 Session 绑定。本地目录选择使用 `uiWorkspace.listDirectory`；文件资源通过地址所属的 Session 和 `sidebarRight.openResource` 打开，原生打开失败时使用内置预览。
 
-当前在 DSH 0.2.0-rc.2 中启用会失败：host manager 导入了已移除的 `settingsNamespace`，并使用旧的 `SettingsScope` 注册 API。迁移设置保存逻辑并通过实际 profile 启动验证前，请勿在 0.2 中启用此 bundle。
+PTC 解释器使用保留的本地文件系统和 subprocess provider：AHP 不能承载其控制管道和本机启动文件。通过 `tools` 发起的调用仍使用路由后的 provider；直接导入 Node 文件系统或进程模块的操作仍在本机执行。安装后需要重启现有 Web 服务；仅刷新页面不会加载新的 profile bundle。
 
-源码类型检查、单元测试和 bundle 构建不能验证 SSH 连接。原生文件链接打开适配器仍使用旧的 `workspaces.openPath` API，尚未针对 0.2 客户端验证。请先在专用 SSH 测试目录验证远程文件操作，再用于实际项目。
+## 已知限制与后续工作
+
+- 此次适配未提供真实 SSH 目标。SSH 部署、远端 GUI 交互终端、原生编辑器启动及可选 TUI 适配器需要针对实际目标验证。自动终端环境探测目前仍跟随本机；远端终端需要 POSIX shell 参数。
+- AHP 0.7 只支持完整资源读取。字节范围读取会在 `maxReadBytes` 上限内下载整个资源后切片，默认上限为 64 MiB。
+- 远端不支持控制管道，目前仅支持 POSIX/Linux 主机。
+- 源码检查和不监听端口的 profile 启动不能验证 GUI 渲染或远程连接。
 
 路由、协议、权限与生命周期细节见[设计文档](docs/design.md)。
 

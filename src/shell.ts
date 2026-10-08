@@ -9,6 +9,7 @@ import type {
   CollectedOutput,
   ShellExecRequest,
   ShellExecSpec,
+  ShellExecution,
   ShellProcess,
   ShellProcessRead,
   ShellRunResult,
@@ -86,6 +87,7 @@ export class RemoteSshShellExecutor extends ShellExecutor {
       command: request.command,
       workdir: request.workdir ?? this.mapper.localWorkspace,
       timeoutMs,
+      onExpiry: request.onExpiry ?? 'kill',
       stdoutMaxBytes,
       signal: request.signal,
       stdin: request.stdin,
@@ -95,23 +97,10 @@ export class RemoteSshShellExecutor extends ShellExecutor {
     }
   }
 
-  override async run(spec: ShellExecSpec): Promise<ShellRunResult> {
-    const outcome = await executeTerminal(this.remote, this.mapper, this.config.shellCommand, spec, spec.stdoutMaxBytes, spec.timeoutMs)
-    return {
-      exitCode: outcome.exitCode,
-      signal: outcome.signal,
-      timedOut: outcome.timedOut,
-      aborted: outcome.aborted,
-      timeoutMs: spec.timeoutMs,
-      stdout: outcome.output.collected(),
-      stderr: { text: '', truncated: false },
-    }
-  }
-
-  override start(spec: ShellExecSpec): ShellProcess {
-    const process = new AhpShellProcess(this.remote, this.mapper, this.config.shellCommand, spec, this.config.outputMaxBytes)
+  override async execute(spec: ShellExecSpec): Promise<ShellExecution> {
+    const process = new AhpShellProcess(this.remote, this.mapper, this.config.shellCommand, spec, spec.stdoutMaxBytes)
     this.processes.add(process)
-    void process.done.finally(() => { this.processes.delete(process) })
+    void process.done.then(() => { this.processes.delete(process) })
     return process
   }
 
@@ -126,32 +115,45 @@ export class RemoteSshShellExecutor extends ShellExecutor {
   }
 }
 
-class AhpShellProcess implements ShellProcess {
+class AhpShellProcess implements ShellExecution {
   status: 'running' | 'completed' | 'killed' = 'running'
   exitCode: number | null = null
   signal: NodeJS.Signals | null = null
   readonly done: Promise<void>
+  private readonly outcome: Promise<ShellRunResult>
+  readonly observed: { stdout: TailBuffer; stderr: TailBuffer }
+  readonly sandbox = { mode: 'danger-full-access' as const, denied: false }
 
   private readonly controller = new AbortController()
   private readonly output: TailBuffer
 
   constructor(remote: RemoteSshRuntime, mapper: WorkspacePathMapper, shellCommand: string, spec: ShellExecSpec, outputMaxBytes: number) {
     this.output = new TailBuffer(outputMaxBytes)
-    this.done = executeTerminal(remote, mapper, shellCommand, { ...spec, signal: combineSignals(spec.signal, this.controller.signal) }, outputMaxBytes, 0, this.output)
-      .then((outcome) => {
-        this.exitCode = outcome.exitCode
-        this.signal = outcome.signal
-        this.status = outcome.signal === null ? 'completed' : 'killed'
-      }, (error: unknown) => {
-        this.output.append(`\n[dsh-remote-ssh infrastructure error] ${errorMessage(error)}\n`)
-        this.exitCode = null
-        this.signal = 'SIGTERM'
-        this.status = 'killed'
-      })
+    this.observed = { stdout: this.output, stderr: new TailBuffer(outputMaxBytes) }
+    this.outcome = executeTerminal(remote, mapper, shellCommand, { ...spec, signal: combineSignals(spec.signal, this.controller.signal) }, outputMaxBytes, spec.onExpiry === 'none' ? 0 : spec.timeoutMs, this.output)
+      .then(outcome => ({
+        exitCode: outcome.exitCode, signal: outcome.signal,
+        timedOut: outcome.timedOut, aborted: outcome.aborted, timeoutMs: spec.timeoutMs,
+        stdout: outcome.output.collected(), stderr: { text: '', truncated: false }, sandbox: this.sandbox,
+      }))
+    this.done = this.outcome.then(outcome => {
+      this.exitCode = outcome.exitCode
+      this.signal = outcome.signal
+      this.status = outcome.signal === null ? 'completed' : 'killed'
+    }, (error: unknown) => {
+      this.observed.stderr.append('spawn failed: ' + errorMessage(error) + '\n')
+      this.exitCode = null
+      this.signal = 'SIGTERM'
+      this.status = 'killed'
+    })
   }
 
+  result(): Promise<ShellRunResult> { return this.outcome }
+
   readOutput(): ShellProcessRead {
-    return this.output.readIncremental()
+    const stdout = this.output.readIncremental()
+    const stderr = this.observed.stderr.readIncremental()
+    return { delta: stdout.delta + (stderr.delta ? '[stderr]\n' + stderr.delta : ''), lossy: stdout.lossy || stderr.lossy }
   }
 
   kill(): boolean {
@@ -386,6 +388,11 @@ class TailBuffer {
     } else {
       this.tail = combined
     }
+  }
+
+  readFrom(offset: number): { text: string; nextOffset: number; lossy: boolean } {
+    const start = Math.max(offset, this.tailStart)
+    return { text: this.tail.subarray(start - this.tailStart).toString('utf8'), nextOffset: this.total, lossy: offset < this.tailStart }
   }
 
   collected(): CollectedOutput {

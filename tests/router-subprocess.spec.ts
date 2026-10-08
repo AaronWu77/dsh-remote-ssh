@@ -88,6 +88,9 @@ async function setup() {
     getClient: async () => client as unknown as AhpClient,
   }
   const shell = {
+    async execute(spec: { command: string; signal?: AbortSignal }) {
+      return { result: () => this.run(spec) }
+    },
     resolve(request: Record<string, unknown>) {
       return { timeoutMs: 10_000, stdoutMaxBytes: 4096, ...request }
     },
@@ -189,7 +192,7 @@ describe('AHP transparent subprocess', () => {
     const { ctx, alias, getSshFallbacks } = await setup()
     try {
       const terminal = await ctx.subprocess.spawnTerminal({
-        argv: ['bash', '-i'], cwd: alias, rows: 30, cols: 100, graceMs: 100,
+        argv: ['bash', '-i'], cwd: alias, rows: 30, cols: 100, graceMs: 100, terminalType: 'xterm-256color',
       })
       const chunks: Buffer[] = []
       terminal.output.on('data', (chunk: Buffer) => { chunks.push(chunk) })

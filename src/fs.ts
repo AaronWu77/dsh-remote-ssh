@@ -164,6 +164,12 @@ export class RemoteSshFileSystem extends FileSystem {
     })()
   }
 
+  /** AHP 0.7 reads whole resources; byte ranges share the configured full-read cap. */
+  override async readByteRange(target: FsTarget, range: { offset: number; length: number }, signal?: AbortSignal): Promise<Uint8Array> {
+    const bytes = await this.readBytes(target, signal, this.config.maxReadBytes)
+    return bytes.slice(range.offset, range.offset + range.length)
+  }
+
   override async readBytes(target: FsTarget, signal: AbortSignal | undefined, maxBytes: number): Promise<Uint8Array> {
     if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new FsError('maxBytes must be a non-negative integer', 'FS_TOO_LARGE')
     throwIfAborted(signal, 'read')

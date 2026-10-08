@@ -1,4 +1,5 @@
 import type { Workspace } from './api.ts'
+import { isAbsoluteWorkspacePath } from '@deepseek-ai/dsh-util-workspace-path'
 
 /** Select only from the path's alias or the current Session's remote world. */
 export function resolveRemoteOpenWorkspace(
@@ -12,7 +13,7 @@ export function resolveRemoteOpenWorkspace(
   const current = bestMatch(workspaces, cwd, workspace => workspace.aliasPath, localContains)
     ?? bestMatch(workspaces, cwd, workspace => workspace.remotePath, posixContains)
   if (current === undefined) return undefined
-  return path.startsWith('/') || localContains(current.aliasPath, path) ? current : undefined
+  return path.startsWith('/') || !isAbsoluteWorkspacePath(path) || localContains(current.aliasPath, path) ? current : undefined
 }
 
 function bestMatch(

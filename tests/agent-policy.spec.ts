@@ -60,7 +60,8 @@ describe('remote shell presentation', () => {
 
   it('publishes only the remote cwd to the scoped System Prompt', async () => {
     const ctx = new Context()
-    await ctx.plugin(SystemPrompt, { persona: 'Your working directory is {{cwd}}.' })
+    await ctx.plugin(SystemPrompt)
+    ctx.effect(() => ctx.systemPrompt.section({ name: 'cwd-template', order: 0, text: 'Your working directory is {{cwd}}.' }), 'test prompt section')
     ctx.systemPrompt.variable('cwd', () => String.raw`C:\host-only\workspace-alias`)
     let remoteScope!: ReturnType<typeof createScope>
     await ctx.plugin(Object.assign((inner: Context) => {

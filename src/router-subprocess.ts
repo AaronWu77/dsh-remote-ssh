@@ -16,6 +16,8 @@ import type {
   SubprocessOutputReader,
   SubprocessSpawnSpec,
   SubprocessTerminalForeground,
+  SubprocessTerminalActivity,
+  SubprocessTerminalEnvironment,
   SubprocessTerminalHandle,
   SubprocessTerminalSignal,
   SubprocessTerminalSpawnSpec,
@@ -50,9 +52,14 @@ export class TransparentSubprocessRuntime extends SubprocessRuntime {
     return this.local.resolveExecutable(command, env, signal)
   }
 
+  override terminalEnvironment(signal?: AbortSignal): Promise<SubprocessTerminalEnvironment> {
+    return this.local.terminalEnvironment(signal)
+  }
+
   override spawn(spec: SubprocessSpawnSpec): SubprocessHandle {
     const route = this.manager.route(undefined, spec.cwd)
     if (route.kind === 'local') return this.local.spawn(spec)
+    if (spec.stdio.control === 'pipe') throw new Error('dsh-remote-ssh: remote AHP subprocesses do not support a control pipe; keep the PTC interpreter on localSubprocess')
     const handle = new RemoteAhpProcessHandle(
       route,
       this.manager.workspaceContext(route),
@@ -87,6 +94,7 @@ export function canUseAhpSubprocess(_spec: SubprocessSpawnSpec): boolean {
  */
 class RemoteAhpProcessHandle implements SubprocessHandle {
   readonly pid = -1
+  readonly control = undefined
   readonly stdin: Writable | undefined
   readonly stdout: Readable | undefined
   readonly stderr: Readable | undefined
@@ -159,7 +167,7 @@ class RemoteAhpProcessHandle implements SubprocessHandle {
     const empty = { data: '', encoding: 'base64' as ContentEncoding }
     let writer: RemoteAhpTerminalHandle | undefined
     let completed = false
-    let run: ReturnType<typeof shell.run> | undefined
+    let run: Promise<import("@deepseek-ai/dsh-shell").ShellRunResult> | undefined
     try {
       await Promise.all([
         client.resourceWrite({ uri: stdoutUri, ...empty }),
@@ -173,12 +181,12 @@ class RemoteAhpProcessHandle implements SubprocessHandle {
             }),
       ])
       if (stdinMode === 'pipe') {
-        const prepared = await shell.run(shell.resolve({
+        const prepared = await (await shell.execute(shell.resolve({
           command: `rm -f -- ${quotePosix(fifoPath)} && mkfifo -- ${quotePosix(fifoPath)}`,
           workdir: this.spec.cwd,
           signal: this.controller.signal,
           sandboxPolicy: { mode: 'danger-full-access', workspaceRoot: this.route.aliasPath },
-        }))
+        }))).result()
         if (prepared.exitCode !== 0) {
           if (this.controller.signal.aborted) return { exitCode: null, signal: prepared.signal ?? 'SIGTERM' }
           throw new Error(`dsh-remote-ssh: failed to create remote stdin FIFO (exit ${prepared.exitCode ?? prepared.signal})`)
@@ -192,7 +200,7 @@ class RemoteAhpProcessHandle implements SubprocessHandle {
         signal: this.controller.signal,
         sandboxPolicy: { mode: 'danger-full-access', workspaceRoot: this.route.aliasPath },
       })
-      run = shell.run(resolved).finally(() => { completed = true })
+      run = (await shell.execute(resolved)).result().finally(() => { completed = true })
       if (stdinMode === 'pipe') {
         const endMarker = `__DSH_STDIN_EOF_${randomUUID().replaceAll('-', '')}__`
         writer = await RemoteAhpTerminalHandle.create(this.route, await this.workspace, {
@@ -200,6 +208,7 @@ class RemoteAhpProcessHandle implements SubprocessHandle {
           cwd: this.spec.cwd,
           rows: 24,
           cols: 80,
+          terminalType: 'xterm-256color',
           graceMs: this.spec.graceMs,
           signal: this.controller.signal,
         })
@@ -297,6 +306,14 @@ class RemoteAhpTerminalHandle implements SubprocessTerminalHandle {
 
   async write(data: string): Promise<void> {
     this.client.dispatch(this.channel, { type: ActionType.TerminalInput, data })
+  }
+
+  async resize(cols: number, rows: number): Promise<void> {
+    this.client.dispatch(this.channel, { type: ActionType.TerminalResized, cols, rows })
+  }
+
+  async inspectActivity(): Promise<SubprocessTerminalActivity> {
+    return { state: 'unknown', revision: 0 }
   }
 
   async inspectForeground(): Promise<SubprocessTerminalForeground | undefined> {

@@ -1,15 +1,17 @@
 /** Browser entry: locale registration, transparent openPath routing, and slots. */
 
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { Context as ClientContext } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-api-session-controller/client'
+import type {} from '@deepseek-ai/dsh-api-workspace-controller/client'
+import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
-import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { en, zh } from './locales.ts'
 import type { RemoteSshLocaleKey } from './locales.ts'
 import type { RemoteDirectoryListing } from './api.ts'
-import { RemoteSshPluginCard } from './RemoteSshPluginCard.tsx'
 import { RemoteSshSettings } from './RemoteSshSettings.tsx'
 import { RemoteWorkspaceFlow } from './RemoteWorkspaceFlow.tsx'
 import type { RemoteWorkspaceFlowInjected } from './RemoteWorkspaceFlow.tsx'
@@ -23,7 +25,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 }
 
 export const name = 'dsh-remote-ssh-client'
-export const inject = ['slots', 'workspaces', 'sessions', 'locale', 'uiWorkspace']
+export const inject = ['slots', 'workspaces', 'sessions', 'locale', 'uiWorkspace', 'sidebarRight']
 
 /** Register the localized settings, workspace flow, and transparent file opener. */
 export function apply(ctx: ClientContext): void {
@@ -55,7 +57,4 @@ export function apply(ctx: ClientContext): void {
       yield ctx.slots.register({ name: 'sidebar.workspaces.directoryFlow', inject: injected }, RemoteWorkspaceFlow)
     }))
 
-  ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
-    name: 'settings.plugin.item', id: 'remote-ssh', order: 30, inject: () => ({ t }),
-  }, RemoteSshPluginCard))
 }

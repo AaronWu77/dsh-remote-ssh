@@ -5,6 +5,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { RemoteOpenFileMode, RemoteSshManager, RemoteSshServer } from './manager.ts'
 import { openRemoteFile } from './open-file.ts'
+import z from '@deepseek-ai/schemastery'
+import { AgentHostConnectionError, formatConnectionDiagnostic } from './connection-error.ts'
 import { appendSshHost, defaultSshConfigFiles, discoverSshConfigHosts } from './ssh-config.ts'
 
 export const REMOTE_SSH_STATE_PATH = '/plugins/dsh-remote-ssh/state'
@@ -22,13 +24,19 @@ export const REMOTE_SSH_OPEN_FILE_PATH = '/plugins/dsh-remote-ssh/open-file'
 export const name = 'dsh-remote-ssh-web'
 export const inject = ['remoteSshManager']
 
+/** Maximum number of diagnostic characters returned by the Web endpoints. */
+export const Config = z.object({ maxErrorCharacters: z.number().default(16_384) })
+interface WebConfig { maxErrorCharacters: number }
+
 /** Activate the Web surface only in compositions that provide a Web host. */
-export function apply(ctx: Context): void {
-  ctx.inject(['webServer'], registerWebRoutes)
+export function apply(ctx: Context, config: WebConfig): void {
+  if (!Number.isSafeInteger(config.maxErrorCharacters) || config.maxErrorCharacters <= 0) throw new Error('dsh-remote-ssh/web: maxErrorCharacters must be a positive integer')
+  ctx.inject(['webServer'], ctx => registerWebRoutes(ctx, config))
 }
 
 /** Register same-origin catalog mutation and connection-probe endpoints. */
-function registerWebRoutes(ctx: Context): void {
+function registerWebRoutes(ctx: Context, config: WebConfig): void {
+  const route = (ctx: Context, path: string, method: string, handler: (req: IncomingMessage, res: ServerResponse) => Promise<void>): (() => void) => registerRoute(ctx, path, method, handler, config.maxErrorCharacters)
   const routes = [
     route(ctx, REMOTE_SSH_STATE_PATH, 'GET', async (_req, res) => {
       json(res, 200, await catalogState(ctx.remoteSshManager))
@@ -152,11 +160,12 @@ function samePath(left: string, right: string): boolean {
   return process.platform === 'win32' ? resolve(left).toLowerCase() === resolve(right).toLowerCase() : resolve(left) === resolve(right)
 }
 
-function route(
+function registerRoute(
   ctx: Context,
   path: string,
   method: string,
   handler: (req: IncomingMessage, res: ServerResponse) => Promise<void>,
+  maxErrorCharacters: number,
 ): () => void {
   return ctx.webServer.register({
     kind: 'exact', path,
@@ -166,7 +175,7 @@ function route(
       try {
         await handler(req, res)
       } catch (error: unknown) {
-        json(res, 400, { error: safeMessage(error) })
+        json(res, 400, { error: safeMessage(error, maxErrorCharacters), ...(error instanceof AgentHostConnectionError ? { code: error.code } : {}) })
       }
     },
   })
@@ -222,8 +231,8 @@ function json(res: ServerResponse, status: number, value: unknown): void {
   res.end(JSON.stringify(value))
 }
 
-function safeMessage(error: unknown): string {
-  return (error instanceof Error ? error.message : String(error)).slice(0, 1000)
+function safeMessage(error: unknown, maxErrorCharacters: number): string {
+  return formatConnectionDiagnostic(error instanceof Error ? error.message : String(error), maxErrorCharacters)
 }
 
 async function probeServer(sshTarget: string, sshArgs: string[]): Promise<{

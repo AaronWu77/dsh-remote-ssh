@@ -33,11 +33,11 @@ await ctx.plugin(RemoteSshShellExecutor, {
 try {
   const seed = await ctx.fs.resolve('seed.txt')
   const seedText = await ctx.fs.readText(seed)
-  const result = await ctx.shell.run(ctx.shell.resolve({
+  const result = await (await ctx.shell.execute(ctx.shell.resolve({
     command: 'printf "cwd=%s\\nhost=%s\\n" "$PWD" "$(hostname)"; cat seed.txt; printf "err-line\\n" >&2; exit 7',
     workdir: localWorkspace,
     sandboxPolicy: { mode: 'danger-full-access', workspaceRoot: localWorkspace },
-  }))
+  }))).result()
   console.log(JSON.stringify({
     protocolVersion: (await ctx.remoteSsh.getConnection()).protocolVersion,
     seedText,

@@ -1,24 +1,18 @@
 import { AhpErrorCodes, SUPPORTED_PROTOCOL_VERSIONS } from '@microsoft/agent-host-protocol'
 import { RpcError } from '@microsoft/agent-host-protocol/client'
 
-/**
- * Protocols newer than the published client package that this plugin has
- * exercised end-to-end for the Resource and Terminal surface it consumes.
- *
- * Keep this list deliberately small. A future protocol is added only after
- * the transparent filesystem, subprocess and PTY integration suite passes
- * against a real Agent Host. Once the SDK publishes that protocol, the Set
- * below de-duplicates it automatically.
- */
-export const VALIDATED_FORWARD_PROTOCOL_VERSIONS = ['0.8.0'] as const
+/** Protocols implemented by the installed SDK, most preferred first. */
+export const DSH_AHP_PROTOCOL_VERSIONS = Object.freeze([...SUPPORTED_PROTOCOL_VERSIONS])
 
-/** Single source of truth for every initialize handshake and diagnostic. */
-export const DSH_AHP_PROTOCOL_VERSIONS = Object.freeze([
-  ...new Set([
-    ...VALIDATED_FORWARD_PROTOCOL_VERSIONS,
-    ...SUPPORTED_PROTOCOL_VERSIONS,
-  ]),
-])
+/**
+ * Reject unsupported protocol declarations at the configuration entry point.
+ * @param versions - Protocols offered by this connection.
+ */
+export function validateProtocolVersions(versions: readonly string[]): void {
+  if (versions.length === 0 || versions.some(version => !DSH_AHP_PROTOCOL_VERSIONS.includes(version))) {
+    throw new Error('dsh-remote-ssh: protocolVersions must be a non-empty subset of [' + DSH_AHP_PROTOCOL_VERSIONS.join(', ') + ']')
+  }
+}
 
 export interface AhpProtocolMismatch {
   offeredVersions: readonly string[]
