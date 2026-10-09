@@ -2,8 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-api-session-controller/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 import { absoluteFileAddress, parseFileAddress } from '@deepseek-ai/dsh-util-workspace-path'
-import { OPEN_FILE_PATH, request, STATE_PATH } from './api.ts'
-import type { CatalogState } from './api.ts'
+import { fetchCatalogState, OPEN_FILE_PATH, request } from './api.ts'
 import { resolveRemoteOpenWorkspace } from './open-route.ts'
 
 interface RemoteOpenResponse {
@@ -24,7 +23,7 @@ export function installRemoteOpenPath(ctx: Context): void {
       const parsed = parseFileAddress(args[0])
       if (parsed === undefined) return previous.apply(sidebar, args)
       const open = async (): Promise<void> => {
-        const state = await request<CatalogState>(STATE_PATH, 'GET', undefined, controller.signal)
+        const state = await fetchCatalogState(controller.signal)
         controller.signal.throwIfAborted()
         const cwd = parsed.scope === 'session'
           ? Object.values(ctx.sessions.list.getSnapshot().byId).find(row => row.id === parsed.sessionId)?.cwd

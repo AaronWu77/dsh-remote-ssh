@@ -7,7 +7,14 @@
     fs: remote-ssh/local-fs
     subprocess: remote-ssh/local-subprocess
 
+- id: workspace
+  name: '@deepseek-ai/dsh-workspace'
+  disabled: true
+
 - insert:
+    - id: remote-ssh-workspace-registry
+      name: dsh-remote-ssh/workspace-registry
+
     # Bare package row makes the dsh.client manifest discoverable. Its node
     # half is intentionally empty; provider rows below stay independently HMR-able.
     - id: remote-ssh-client-host

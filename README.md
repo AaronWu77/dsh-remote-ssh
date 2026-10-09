@@ -6,6 +6,8 @@ Use SSH hosts as transparent workspaces in [DeepSeek Harness](https://github.com
 
 Choose `LOCAL > project` and ordinary file, search, shell, and background-task tools run locally. Choose `<Server> > project` and those same tools run on that SSH host. There is no second set of `remote_*` tools, and a remote failure never falls back to the local machine.
 
+Host-owned bootstrap and attachment paths map through the preserved local filesystem. Remote workspace aliases are not mapped as local host assets. PTC interpreters use the local filesystem/subprocess realm; a replacement PTC provider must retain both isolation entries from the stock runtime row.
+
 ## Features
 
 - discovers concrete hosts from the user and system OpenSSH configuration, including recursive `Include` files;
@@ -27,9 +29,9 @@ Remote workspaces currently support Linux hosts with readable `/proc`, `ps`, `aw
 
 This fork pins the official AHP SDK 1.0.0 and offers its supported protocols, `1.0.0` and `0.9.0`. It does not advertise `0.10.0`, `0.8.0`, or legacy `0.7.x`. An incompatible embedded candidate is stopped before the next candidate starts; a successful host connection remains active until disposal. A real Linux Agent Host negotiated `0.9.0` and passed UTF-8 writes, binary byte-range reads, and terminal execution.
 
-Set manager `protocolVersions: ["0.9.0"]` to restrict negotiation. Changing this list or connection timeouts invalidates host/workspace connection caches. Startup uses one deadline across all candidates; expiry or disposal prevents further candidate and tunnel spawns. Runtime `shutdownTimeoutMs` controls TERM grace and post-KILL settling. Embedded data is beneath `remoteRuntimeRoot`; cleanup validates the leader data directory and retains group-member birth identities through leader exit. Live group members must be gone before cleanup succeeds.
+Set manager `protocolVersions: ["0.9.0"]` to restrict negotiation. Changing this list or connection timeouts invalidates host/workspace connection caches. Every SSH transport runs `-o BatchMode=yes` with `connectTimeoutMs` (default 10000, seconds-rounded on the command line), because no channel can answer an interactive prompt. Startup uses one deadline across all candidates; expiry or disposal prevents further candidate and tunnel spawns. Runtime `shutdownTimeoutMs` controls TERM grace and post-KILL settling. Embedded data is beneath `remoteRuntimeRoot`; cleanup validates the leader data directory and retains group-member birth identities through leader exit. Live group members must be gone before cleanup succeeds. A workspace may map any remote directory except the remote root `/`, which would claim every POSIX-absolute path on a POSIX host and is rejected at configuration validation.
 
-The directory picker shows a localized failure summary and expandable diagnostics. The Web provider accepts `maxErrorCharacters` (default 16384); URL/CLI connection tokens are redacted. See [the fork upgrade guide](UPGRADE.md) before replacing the previous archive.
+The directory picker shows a localized failure summary and expandable diagnostics. The Web provider accepts `maxErrorCharacters` (default 16384) and registers only where the composition provides `connection`: every route asks that service's browser-trust fence for a rejection first (401/403), so an unauthenticated or rebinding-shaped caller never reaches a handler. URL/CLI connection tokens are redacted. See [the fork upgrade guide](UPGRADE.md) before replacing the previous archive.
 
 ## Install
 
@@ -39,7 +41,7 @@ This editable fork targets DSH 0.2.0-rc.2. Build and install its local archive; 
 pnpm install --ignore-scripts
 pnpm run build
 pnpm pack --pack-destination ./artifacts
-dsh plugin --profile web add file:./artifacts/dsh-remote-ssh-0.2.4-aaron.4.tgz --ignore-scripts
+dsh plugin --profile web add file:./artifacts/dsh-remote-ssh-0.2.4-aaron.8.tgz --ignore-scripts
 dsh web
 ```
 
@@ -94,7 +96,7 @@ Remote file links use the first supported VS Code-compatible editor by default. 
 The remote host needs:
 
 - a POSIX shell and non-interactive OpenSSH access;
-- `bash`, `base64`, and `mkfifo` for shell and subprocess execution;
+- `bash`, `base64`, `mkfifo`, `dd`, and `mv` for shell and subprocess execution;
 - `rg` for glob and grep tools;
 - a VS Code Agent Host supplied by the official VS Code CLI or an existing VS Code Server installation.
 
@@ -108,7 +110,9 @@ Remote filesystem results expose POSIX paths only. The local Workspace identity 
 
 When a tool result exceeds the inline budget, a remote session writes the complete result through AHP into that SSH host's private runtime directory and returns a remote POSIX locator. The local spill backend is used only for local sessions; an unknown or stale session never falls back to host storage. Stock `glob`/`grep` results are also normalized back into remote POSIX path space, preventing a Windows host from presenting `/root/...` as `E:\root\...`.
 
-Removing a remote mapping does not delete its local identity directory, Workspace record, Session, or message history. Old sessions remain readable, but new tool calls fail closed instead of accidentally running locally.
+**Delete workspace** in the sidebar removes both its Workspace registration and Remote SSH mapping. Neither the remote directory nor the local identity directory, Session logs, or message history is deleted. The mapping is retired durably before registration deletion; a failed registration deletion restores it or reports a rollback error. **Remove execution mapping** in Settings retains the Workspace registration and history. Both operations leave stale aliases non-local across restarts; old sessions remain readable but cannot execute.
+
+Repeated selection of the same server and normalized remote directory reuses its existing mapping. Existing duplicate mappings retain their separate aliases and history; raw remote paths on the same server use the first matching mapping, while equally specific paths on different servers are rejected. Workspace creation disables repeated submissions and cancellation until the request finishes; a closed flow ignores late selection callbacks, and errors remain visible in the flow or Settings.
 
 Local and remote folder selection use the same in-app browser. This avoids native picker dependencies and also works around the Windows path issue described in [DeepSeek Harness discussion #396](https://github.com/deepseek-ai/deepseek-harness/discussions/396).
 
@@ -133,9 +137,9 @@ Passwords, MFA prompts, and first-use host-key confirmation are not bridged into
 
 ## Compatibility
 
-- DeepSeek Harness `0.1.0-rc.6` package surface;
+- DeepSeek Harness `0.2.0-rc.2` package surface;
 - POSIX/Linux SSH hosts;
-- `@microsoft/agent-host-protocol` 0.7 client with the Resource and Terminal subset validated against AHP 0.8;
+- `@microsoft/agent-host-protocol` 1.0.0 client offering AHP 1.0.0 and 0.9.0;
 - system OpenSSH configuration, SSH Agent, `known_hosts`, and `ProxyJump`.
 - local Visual Studio Code, Cursor, Windsurf, or VSCodium with a compatible Remote SSH extension for native remote file opening.
 
@@ -145,10 +149,16 @@ The fork uses pnpm 11.7.0 and DSH 0.2.0-rc.2 peers. Settings are stored through 
 
 The PTC interpreter uses preserved local filesystem and subprocess providers. Its control pipe and bootstrap paths cannot run through AHP. Calls made through `tools` still use the routed providers; direct Node filesystem or process imports remain local. Restart the existing Web service after installation; refreshing a page alone does not load a new profile bundle.
 
+### Subprocess output limits
+
+The `remote-ssh-subprocess` router exposes `outputChunkBytes` (65536 bytes by default) and `outputPollMs` (40 ms by default). Each process has independent stdout/stderr FIFO pumps and one immutable chunk slot per stream. The remote output files occupy at most twice the chunk size, including temporary files. Each output resource read contains at most `4 * ceil(chunkBytes / 3)` base64 characters plus AHP metadata; each output byte is read once. Consumer backpressure delays acknowledgement instead of accumulating growing output files. Pipes retain bounded Node stream buffers and one pending chunk; collected output uses the requested tail and spill limits. Spill paths refer to the preserved local managed-output collector.
+
+Cancellation stops only the caller’s wait for a shared connection. Ordinary shell executions require a terminal disposal acknowledgement or observed terminal exit before releasing workspace ownership. Subprocess preparation and main execution require the same cleanup confirmation; a dispatched wrapper must also publish its stopped marker within `graceMs`. Unknown termination rejects deletion, blocks the workspace route and retains its private resource URI for inspection. AHP cannot observe arbitrary escaped descendants or unrecorded MSYS auxiliary fork children; stdin terminal dispatch and in-flight data RPC deadlines are separate limits. Repeated unobservable failures can retain multiple private directories.
+
 ## Known Limitations and Deferred Work
 
 - No real SSH target was provided for this adaptation. SSH deployment, remote interactive GUI terminals, native-editor launch, and the optional TUI adapter require target-specific validation. Automatic terminal-environment discovery currently follows the local host; remote terminals require POSIX shell arguments.
-- AHP 0.7 reads whole resources. Byte-range reads therefore download the complete resource under `maxReadBytes` (64 MiB by default), then slice it.
+- AHP 1.0 reads whole resources. Byte-range reads therefore download the complete resource under `maxReadBytes` (64 MiB by default), then slice it.
 - Remote control pipes are unsupported. Remote workspaces currently require POSIX/Linux hosts.
 - Source checks and non-listening profile startup do not validate the rendered GUI or a remote connection.
 

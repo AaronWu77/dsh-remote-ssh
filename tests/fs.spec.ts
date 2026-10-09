@@ -99,6 +99,15 @@ describe('RemoteSshFileSystem', () => {
     await expect(fs.readText(target)).resolves.toBe('gamma\n')
   })
 
+  it('writes edit replacements literally instead of expanding replacement patterns', async () => {
+    const { ctx, fs, local } = await setup()
+    const target = await fs.resolve('literal.txt', { cwd: local })
+    const created = await fs.writeText(target, 'price = 0\n', { kind: 'createIfAbsent' })
+    await fs.editText(target, { oldString: '0', newString: '$$5 ($&)', replaceAll: false }, { version: created.version })
+    await expect(fs.readText(target)).resolves.toBe('price = $$5 ($&)\n')
+    await ctx.fiber.dispose()
+  })
+
   it('publishes exact binary bytes through AHP base64 transport', async () => {
     const { fs, client, local } = await setup()
     const content = Uint8Array.from([0x00, 0xff, 0x42])

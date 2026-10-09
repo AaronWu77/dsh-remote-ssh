@@ -1,4 +1,6 @@
 node_modules/
 lib/
 .tmp/
+.local/development-peer-backup/
+.local/deletion-test/
 *.tgz

@@ -1,11 +1,13 @@
 import { Context } from '@deepseek-ai/cordis'
 import { sessionFileAddress } from '@deepseek-ai/dsh-util-workspace-path'
 import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
-import { emptyCatalog, OPEN_FILE_PATH, request, STATE_PATH } from '../src/client/api.ts'
+import { emptyCatalog, fetchCatalogState, OPEN_FILE_PATH, request } from '../src/client/api.ts'
 import { installRemoteOpenPath } from '../src/client/open-path.ts'
 
 vi.mock('../src/client/api.ts', async importOriginal => ({
-  ...await importOriginal<typeof import('../src/client/api.ts')>(), request: vi.fn(),
+  ...await importOriginal<typeof import('../src/client/api.ts')>(),
+  request: vi.fn(),
+  fetchCatalogState: vi.fn(),
 }))
 
 function fixture() {
@@ -24,14 +26,14 @@ function fixture() {
 }
 
 describe('remote file resource navigation', () => {
-  beforeEach(() => { vi.mocked(request).mockReset() })
+  beforeEach(() => { vi.mocked(request).mockReset(); vi.mocked(fetchCatalogState).mockReset() })
   it('routes a relative path through the address owning Session, not the selected Session', async () => {
     const { sidebar, original } = fixture()
     const posted = Promise.withResolvers<void>()
+    vi.mocked(fetchCatalogState).mockResolvedValue({ ...emptyCatalog, workspaces: [
+      { id: 'dev', serverId: 'server', remotePath: '/srv/dev', aliasPath: 'D:/aliases/dev' },
+    ] })
     vi.mocked(request).mockImplementation(async (path, _method, body) => {
-      if (path === STATE_PATH) return { ...emptyCatalog, workspaces: [
-        { id: 'dev', serverId: 'server', remotePath: '/srv/dev', aliasPath: 'D:/aliases/dev' },
-      ] }
       expect(path).toBe(OPEN_FILE_PATH)
       expect(body).toEqual({ workspaceId: 'dev', path: 'src/file.ts' })
       posted.resolve()
@@ -46,7 +48,7 @@ describe('remote file resource navigation', () => {
     const { sidebar, original } = fixture()
     const fallback = Promise.withResolvers<void>()
     original.mockImplementation(() => { fallback.resolve() })
-    vi.mocked(request).mockRejectedValue(new Error('native editor unavailable'))
+    vi.mocked(fetchCatalogState).mockRejectedValue(new Error('native editor unavailable'))
     const address = sessionFileAddress('source', 'src/file.ts')
     sidebar.openResource(address)
     await fallback.promise
@@ -55,9 +57,9 @@ describe('remote file resource navigation', () => {
 
   it('does not post or navigate when its scope is disposed during catalog loading', async () => {
     const { ctx, sidebar, original } = fixture()
-    const catalog = Promise.withResolvers<unknown>()
+    const catalog = Promise.withResolvers<typeof emptyCatalog>()
     let signal: AbortSignal | undefined
-    vi.mocked(request).mockImplementation((_path, _method, _body, ownedSignal) => {
+    vi.mocked(fetchCatalogState).mockImplementation(ownedSignal => {
       signal = ownedSignal
       return catalog.promise
     })
@@ -67,6 +69,6 @@ describe('remote file resource navigation', () => {
     catalog.resolve(emptyCatalog)
     await catalog.promise
     expect(original).not.toHaveBeenCalled()
-    expect(request).toHaveBeenCalledTimes(1)
+    expect(fetchCatalogState).toHaveBeenCalledTimes(1)
   })
 })

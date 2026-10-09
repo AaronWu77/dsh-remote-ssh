@@ -354,9 +354,9 @@ export class RemoteSshFileSystem extends FileSystem {
       if (!edit.replaceAll && count !== 1) {
         throw new FsError(`old_string appears ${count} times in "${target.displayPath}"`, 'FS_AMBIGUOUS_EDIT')
       }
-      const normalizedAfter = edit.replaceAll
-        ? before.split(oldString).join(normalizeLineEndings(edit.newString))
-        : before.replace(oldString, normalizeLineEndings(edit.newString))
+      // Split/join keeps the replacement literal: `String.replace` would expand
+      // `$$`, `$&`, `` $` ``, and `$'` in model-supplied text.
+      const normalizedAfter = before.split(oldString).join(normalizeLineEndings(edit.newString))
       const afterStorage = usesCrlf(stored) ? normalizedAfter.replaceAll('\n', '\r\n') : normalizedAfter
       try {
         const client = await this.remote.getClient()

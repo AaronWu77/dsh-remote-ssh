@@ -28,15 +28,29 @@ export const inject = ['remoteSshManager']
 export const Config = z.object({ maxErrorCharacters: z.number().default(16_384) })
 interface WebConfig { maxErrorCharacters: number }
 
-/** Activate the Web surface only in compositions that provide a Web host. */
+/**
+ * The composition's browser-trust fence (`ctx.connection`, owned by
+ * `@deepseek-ai/dsh-client-connection`): its Host/Origin checks defeat DNS
+ * rebinding and cross-site calls, and its browser authentication rejects
+ * callers that never exchanged the launch token. These routes exist only where
+ * that fence does, because without it they are unauthenticated writes to the
+ * SSH config, the workspace catalog, and the remote filesystem.
+ */
+interface ConnectionFence {
+  requestRejection(request: { readonly headers: IncomingMessage['headers'] }): 401 | 403 | undefined
+}
+
+/** Activate the Web surface only in compositions that provide a Web host and its trust fence. */
 export function apply(ctx: Context, config: WebConfig): void {
   if (!Number.isSafeInteger(config.maxErrorCharacters) || config.maxErrorCharacters <= 0) throw new Error('dsh-remote-ssh/web: maxErrorCharacters must be a positive integer')
-  ctx.inject(['webServer'], ctx => registerWebRoutes(ctx, config))
+  ctx.inject(['webServer', 'connection'], ctx => registerWebRoutes(ctx, config))
 }
 
 /** Register same-origin catalog mutation and connection-probe endpoints. */
 function registerWebRoutes(ctx: Context, config: WebConfig): void {
-  const route = (ctx: Context, path: string, method: string, handler: (req: IncomingMessage, res: ServerResponse) => Promise<void>): (() => void) => registerRoute(ctx, path, method, handler, config.maxErrorCharacters)
+  const fence = ctx.get('connection') as ConnectionFence | undefined
+  if (fence === undefined) throw new Error('dsh-remote-ssh/web: the composition browser-trust fence is unavailable')
+  const route = (ctx: Context, path: string, method: string, handler: (req: IncomingMessage, res: ServerResponse) => Promise<void>): (() => void) => registerRoute(ctx, path, method, handler, config.maxErrorCharacters, fence)
   const routes = [
     route(ctx, REMOTE_SSH_STATE_PATH, 'GET', async (_req, res) => {
       json(res, 200, await catalogState(ctx.remoteSshManager))
@@ -92,7 +106,7 @@ function registerWebRoutes(ctx: Context, config: WebConfig): void {
     route(ctx, REMOTE_SSH_PROBE_PATH, 'POST', async (req, res) => {
       const body = await readJson(req)
       const server = await resolveAvailableServer(ctx.remoteSshManager, requiredString(body, 'id'))
-      json(res, 200, await probeServer(server.sshTarget, server.sshArgs ?? []))
+      json(res, 200, await probeServer(server.sshExecutable ?? 'ssh', server.sshTarget, server.sshArgs ?? []))
     }),
     route(ctx, REMOTE_SSH_CONFIG_HOST_PATH, 'POST', async (req, res) => {
       const body = await readJson(req)
@@ -166,12 +180,18 @@ function registerRoute(
   method: string,
   handler: (req: IncomingMessage, res: ServerResponse) => Promise<void>,
   maxErrorCharacters: number,
+  fence: ConnectionFence,
 ): () => void {
   return ctx.webServer.register({
     kind: 'exact', path,
     handler: async (req, res) => {
+      const rejection = fence.requestRejection(req)
+      if (rejection !== undefined) {
+        res.statusCode = rejection
+        res.end()
+        return
+      }
       if (req.method !== method) return json(res, 405, { error: 'method not allowed' })
-      if (!trustedRequest(req)) return json(res, 403, { error: 'forbidden' })
       try {
         await handler(req, res)
       } catch (error: unknown) {
@@ -214,14 +234,6 @@ function parseOpenFileMode(value: unknown): RemoteOpenFileMode {
   throw new Error('openFileMode is invalid')
 }
 
-function trustedRequest(req: IncomingMessage): boolean {
-  if (req.headers['sec-fetch-site'] === 'cross-site') return false
-  const host = req.headers.host
-  const origin = req.headers.origin
-  if (host === undefined || origin === undefined) return origin === undefined
-  try { return new URL(origin).host === new URL(`http://${host}`).host } catch { return false }
-}
-
 function json(res: ServerResponse, status: number, value: unknown): void {
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
@@ -235,14 +247,14 @@ function safeMessage(error: unknown, maxErrorCharacters: number): string {
   return formatConnectionDiagnostic(error instanceof Error ? error.message : String(error), maxErrorCharacters)
 }
 
-async function probeServer(sshTarget: string, sshArgs: string[]): Promise<{
+async function probeServer(executable: string, sshTarget: string, sshArgs: string[]): Promise<{
   reachable: boolean
   hostname?: string
   commands?: Record<string, boolean>
   error?: string
 }> {
   const command = 'printf "hostname=%s\\n" "$(hostname)"; for dsh_cmd in bash pwsh rg code; do if command -v "$dsh_cmd" >/dev/null 2>&1; then printf "%s=1\\n" "$dsh_cmd"; else printf "%s=0\\n" "$dsh_cmd"; fi; done'
-  const child = spawn('ssh', [...sshArgs, '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', sshTarget, command], {
+  const child = spawn(executable, [...sshArgs, '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', sshTarget, command], {
     windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
   })
   const stdout: Buffer[] = []

@@ -6,6 +6,8 @@
 
 选择 `LOCAL > project` 时，普通文件、搜索、shell 和后台任务工具在本机运行；选择 `<服务器> > project` 时，同一批工具改在对应 SSH 主机上运行。插件不会增加另一套 `remote_*` 工具，远端失败也绝不会回退本机。
 
+宿主拥有的 bootstrap 和附件路径通过保留的本地文件系统映射。远程工作区别名不会被映射成本地宿主资源。PTC 解释器使用本地文件系统和子进程隔离域；替换 PTC 提供器时须保留原运行时条目的这两个隔离配置。
+
 ## 功能
 
 - 自动读取用户与系统 OpenSSH 配置，包括递归 `Include`，并发现其中的具体主机；
@@ -27,9 +29,9 @@
 
 此 fork 固定使用官方 AHP SDK 1.0.0，声明该 SDK 支持的 `1.0.0` 和 `0.9.0` 协议；不声明 `0.10.0`、`0.8.0` 或旧 `0.7.x`。不兼容的嵌入式候选会先停止，再尝试下一候选；成功连接会保留到插件释放。真实 Linux Agent Host 已协商 `0.9.0`，并通过 UTF-8 写入、二进制字节范围读取及终端执行测试。
 
-manager 的 `protocolVersions: ["0.9.0"]` 可限制协商版本。修改版本列表或连接超时会清空 host/workspace 连接缓存。全部候选共用一次启动期限；超时或释放后不会再启动候选或隧道。runtime 的 `shutdownTimeoutMs` 控制 TERM 宽限及 KILL 后等待时间。嵌入式数据位于 `remoteRuntimeRoot` 下；清理会验证组长的数据目录，并在组长退出后保留成员的启动身份。仅在进程组不再有存活成员时报告清理成功。
+manager 的 `protocolVersions: ["0.9.0"]` 可限制协商版本。修改版本列表或连接超时会清空 host/workspace 连接缓存。所有 SSH 传输都带 `-o BatchMode=yes` 与 `connectTimeoutMs`（默认 10000，按秒取整写入命令行），因为没有任何通道能回答交互式提示。全部候选共用一次启动期限；超时或释放后不会再启动候选或隧道。runtime 的 `shutdownTimeoutMs` 控制 TERM 宽限及 KILL 后等待时间。嵌入式数据位于 `remoteRuntimeRoot` 下；清理会验证组长的数据目录，并在组长退出后保留成员的启动身份。仅在进程组不再有存活成员时报告清理成功。工作区可映射远端任意目录，但不能映射远端根 `/`：在 POSIX 主机上它会认领所有 POSIX 绝对路径，因此在配置校验阶段即被拒绝。
 
-目录选择器显示本地化错误摘要和可展开详情。Web provider 的 `maxErrorCharacters` 默认值为 16384；URL/CLI 连接令牌会被遮盖。替换旧安装包前，请阅读 [fork 升级指南](UPGRADE.md)。
+目录选择器显示本地化错误摘要和可展开详情。Web provider 的 `maxErrorCharacters` 默认值为 16384，且只在组合提供了 `connection` 时注册路由：每个路由先向该服务的浏览器信任栅栏要一个拒绝（401/403），未认证或形似 DNS rebinding 的调用者无法进入任何处理函数。URL/CLI 连接令牌会被遮盖。替换旧安装包前，请阅读 [fork 升级指南](UPGRADE.md)。
 
 ## 安装
 
@@ -39,7 +41,7 @@ manager 的 `protocolVersions: ["0.9.0"]` 可限制协商版本。修改版本�
 pnpm install --ignore-scripts
 pnpm run build
 pnpm pack --pack-destination ./artifacts
-dsh plugin --profile web add file:./artifacts/dsh-remote-ssh-0.2.4-aaron.4.tgz --ignore-scripts
+dsh plugin --profile web add file:./artifacts/dsh-remote-ssh-0.2.4-aaron.8.tgz --ignore-scripts
 dsh web
 ```
 
@@ -91,7 +93,7 @@ Codex、Claude Code 及其他自动化 Agent 应直接遵循 [INSTALL.md](INSTAL
 远端主机需要：
 
 - POSIX shell，以及可非交互使用的 OpenSSH 连接；
-- 用于 shell 和子进程执行的 `bash`、`base64` 与 `mkfifo`；
+- 用于 shell 和子进程执行的 `bash`、`base64`、`mkfifo`、`dd` 与 `mv`；
 - 为 glob 和 grep 工具提供的 `rg`；
 - 由官方 VS Code CLI 或已有 VS Code Server 提供的 VS Code Agent Host。
 
@@ -105,7 +107,9 @@ Codex、Claude Code 及其他自动化 Agent 应直接遵循 [INSTALL.md](INSTAL
 
 工具结果超过内联上限时，远端会话的完整结果通过 AHP 写入该 SSH 主机的私有 runtime 目录，提示中的 locator 也是远端 POSIX 路径。本机 spill 后端仅供本机会话使用；未知或失效的会话不会回退到本机保存。`glob`/`grep` 的结果也会在官方工具执行后校正到远端 POSIX 路径，避免 Windows 宿主把 `/root/...` 显示成 `E:\root\...`。
 
-移除远端映射不会删除它的本地身份目录、Workspace 记录、Session 或消息历史。旧会话仍然可读，但新的工具调用会 fail-closed，而不是意外落到本机执行。
+侧栏的**删除工作区**会同时移除 Workspace 注册记录和 Remote SSH 映射，不会删除远端目录、本地身份目录、Session 日志或消息历史。映射会先持久停用，再删除注册记录；注册删除失败时会恢复映射，或明确报告回滚错误。设置中的**移除执行映射**保留 Workspace 注册记录和历史。两种操作都使旧别名在重启后仍不能回退本机；旧会话仍可读取，但不能执行。
+
+重复选择相同服务器和规范化后的远端目录会复用已有映射。已有重复映射保留各自的别名和历史；同一服务器的原始远端路径使用首个匹配映射，不同服务器上同等具体的路径会被拒绝。工作区创建请求完成前会禁用重复提交和取消；关闭后的流程忽略迟到的选择回调，错误在选择流程或设置页内显示。
 
 本机和远端目录都使用相同的应用内浏览器，不依赖原生目录选择器，也避开了 [DeepSeek Harness discussion #396](https://github.com/deepseek-ai/deepseek-harness/discussions/396) 中的 Windows 路径问题。
 
@@ -130,9 +134,9 @@ Web UI 不桥接密码、MFA 和首次 host-key 确认。请先通过 OpenSSH �
 
 ## 兼容性
 
-- DeepSeek Harness `0.1.0-rc.6` package surface；
+- DeepSeek Harness `0.2.0-rc.2` package surface；
 - POSIX/Linux SSH 主机；
-- `@microsoft/agent-host-protocol` 0.7 客户端，并已针对 AHP 0.8 验证 Resource 与 Terminal 子集；
+- `@microsoft/agent-host-protocol` 1.0.0 客户端，提供 AHP 1.0.0 和 0.9.0 协议；
 - 系统 OpenSSH 配置、SSH Agent、`known_hosts` 和 `ProxyJump`。
 - 使用原生远端文件打开方式时，本机需要装有 Visual Studio Code、Cursor、Windsurf 或 VSCodium，以及兼容的 Remote SSH 扩展。
 
@@ -142,10 +146,16 @@ Web UI 不桥接密码、MFA 和首次 host-key 确认。请先通过 OpenSSH �
 
 PTC 解释器使用保留的本地文件系统和 subprocess provider：AHP 不能承载其控制管道和本机启动文件。通过 `tools` 发起的调用仍使用路由后的 provider；直接导入 Node 文件系统或进程模块的操作仍在本机执行。安装后需要重启现有 Web 服务；仅刷新页面不会加载新的 profile bundle。
 
+### 子进程输出上限
+
+`remote-ssh-subprocess` 路由器提供 `outputChunkBytes`（默认 65536 字节）和 `outputPollMs`（默认 40 毫秒）。每个进程分别使用 stdout/stderr FIFO 泵，每个流拥有一个不可变分块槽。远端输出文件连同临时文件最多占用两倍分块大小。每次输出资源读取最多包含 `4 * ceil(chunkBytes / 3)` 个 base64 字符及 AHP 元数据；每个输出字节只读取一次。消费者背压会延迟确认，而不是累积不断增长的输出文件。管道保留有上限的 Node 流缓冲区和一个待处理分块；收集输出使用请求指定的尾部和 spill 上限。spill 路径指向保留的本机托管输出收集器。
+
+取消只终止调用者对共享连接的等待。普通 shell 执行必须获得终端释放确认或观察到终端退出，才能释放工作区所有权。子进程准备和主执行需要相同的清理确认；已发送的包装脚本还必须在 `graceMs` 内发布停止标记。无法确认终止时会拒绝删除、阻止工作区路由并保留私有资源 URI 供检查。AHP 无法观察任意逃逸的后代进程或未记录的 MSYS 辅助 fork 子进程；stdin 终端发送和进行中的数据 RPC 超时是独立限制。重复发生的不可观察终止失败可能保留多个私有目录。
+
 ## 已知限制与后续工作
 
 - 此次适配未提供真实 SSH 目标。SSH 部署、远端 GUI 交互终端、原生编辑器启动及可选 TUI 适配器需要针对实际目标验证。自动终端环境探测目前仍跟随本机；远端终端需要 POSIX shell 参数。
-- AHP 0.7 只支持完整资源读取。字节范围读取会在 `maxReadBytes` 上限内下载整个资源后切片，默认上限为 64 MiB。
+- AHP 1.0 只支持完整资源读取。字节范围读取会在 `maxReadBytes` 上限内下载整个资源后切片，默认上限为 64 MiB。
 - 远端不支持控制管道，目前仅支持 POSIX/Linux 主机。
 - 源码检查和不监听端口的 profile 启动不能验证 GUI 渲染或远程连接。
 

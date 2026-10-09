@@ -16,6 +16,7 @@ import type {
 } from '@deepseek-ai/dsh-shell'
 import z from '@deepseek-ai/schemastery'
 import type { RemoteSshRuntime } from './index.ts'
+import type { RemoteSshManager } from './manager.ts'
 import { fileUriFromPosixPath, quotePosix, WorkspacePathMapper } from './index.ts'
 
 export interface Config {
@@ -44,6 +45,14 @@ interface ExecutionOutcome {
   output: TailBuffer
 }
 
+/** Internal remote execution evidence, not a persisted ShellRunResult field. */
+export interface RemoteShellExecution extends ShellExecution {
+  /** True when terminal input dispatch was attempted; false proves no command dispatch occurred. */
+  readonly dispatched: Promise<boolean>
+  /** Settles after owned terminal cleanup; rejects when shutdown acknowledgement is unknown. */
+  readonly quiescent: Promise<void>
+}
+
 const UTF8 = 'utf-8' as ContentEncoding
 
 export class RemoteSshShellExecutor extends ShellExecutor {
@@ -60,12 +69,14 @@ export class RemoteSshShellExecutor extends ShellExecutor {
 
   readonly config: ResolvedConfig
   private readonly remote: RemoteSshRuntime
+  private readonly manager: RemoteSshManager | undefined
   private readonly mapper: WorkspacePathMapper
   private readonly processes = new Set<AhpShellProcess>()
 
   constructor(ctx: Context, config: Config) {
     super(ctx)
     this.remote = ctx.remoteSsh
+    this.manager = ctx.get('remoteSshManager')
     this.config = config as ResolvedConfig
     if ((config.localWorkspace === undefined) !== (config.remoteWorkspace === undefined)) {
       throw new Error('dsh-remote-ssh/shell: localWorkspace and remoteWorkspace must be configured together')
@@ -76,7 +87,11 @@ export class RemoteSshShellExecutor extends ShellExecutor {
     this.validate()
     ctx.effect(() => async () => {
       for (const process of this.processes) process.kill()
-      await Promise.allSettled([...this.processes].map(process => process.done))
+      // One unobservable cleanup must not abandon the remaining owned terminals.
+      const settled = await Promise.allSettled([...this.processes].map(process => process.quiescent))
+      const failures = settled.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
+      if (failures.length === 1) throw failures[0]
+      if (failures.length > 1) throw new AggregateError(failures, 'Remote SSH shell teardown observed multiple unobservable cleanups')
     }, 'Remote SSH shell teardown')
   }
 
@@ -97,10 +112,13 @@ export class RemoteSshShellExecutor extends ShellExecutor {
     }
   }
 
-  override async execute(spec: ShellExecSpec): Promise<ShellExecution> {
+  override async execute(spec: ShellExecSpec): Promise<RemoteShellExecution> {
+    const manager = this.manager
+    const route = manager?.route(this.mapper.localWorkspace)
     const process = new AhpShellProcess(this.remote, this.mapper, this.config.shellCommand, spec, spec.stdoutMaxBytes)
+    const release = manager && route?.kind === 'remote' ? manager.ownExecution(route, { terminate: () => { process.kill() }, done: process.quiescent }) : undefined
     this.processes.add(process)
-    void process.done.then(() => { this.processes.delete(process) })
+    void process.quiescent.then(() => { this.processes.delete(process); release?.() }, () => { /* Unknown cleanup retains ownership for retirement. */ })
     return process
   }
 
@@ -115,11 +133,13 @@ export class RemoteSshShellExecutor extends ShellExecutor {
   }
 }
 
-class AhpShellProcess implements ShellExecution {
+class AhpShellProcess implements RemoteShellExecution {
   status: 'running' | 'completed' | 'killed' = 'running'
   exitCode: number | null = null
   signal: NodeJS.Signals | null = null
   readonly done: Promise<void>
+  readonly dispatched: Promise<boolean>
+  readonly quiescent: Promise<void>
   private readonly outcome: Promise<ShellRunResult>
   readonly observed: { stdout: TailBuffer; stderr: TailBuffer }
   readonly sandbox = { mode: 'danger-full-access' as const, denied: false }
@@ -130,12 +150,22 @@ class AhpShellProcess implements ShellExecution {
   constructor(remote: RemoteSshRuntime, mapper: WorkspacePathMapper, shellCommand: string, spec: ShellExecSpec, outputMaxBytes: number) {
     this.output = new TailBuffer(outputMaxBytes)
     this.observed = { stdout: this.output, stderr: new TailBuffer(outputMaxBytes) }
-    this.outcome = executeTerminal(remote, mapper, shellCommand, { ...spec, signal: combineSignals(spec.signal, this.controller.signal) }, outputMaxBytes, spec.onExpiry === 'none' ? 0 : spec.timeoutMs, this.output)
+    let cleanupFailure: unknown
+    let dispatch!: (attempted: boolean) => void
+    this.dispatched = new Promise<boolean>(resolve => { dispatch = resolve })
+    this.outcome = executeTerminal(remote, mapper, shellCommand, { ...spec, signal: combineSignals(spec.signal, this.controller.signal) }, outputMaxBytes, spec.onExpiry === 'none' ? 0 : spec.timeoutMs, this.output, () => dispatch(true), error => { cleanupFailure = error })
+      .finally(() => { dispatch(false) })
       .then(outcome => ({
         exitCode: outcome.exitCode, signal: outcome.signal,
         timedOut: outcome.timedOut, aborted: outcome.aborted, timeoutMs: spec.timeoutMs,
+        // The AHP terminal channel is one PTY stream, so a remote command's stderr
+        // is captured into stdout and this field stays empty. Consumers that need
+        // a cause must read stdout; the routed subprocess path keeps streams apart.
         stdout: outcome.output.collected(), stderr: { text: '', truncated: false }, sandbox: this.sandbox,
       }))
+    const settledCleanup = (): void => { if (cleanupFailure !== undefined) throw cleanupFailure }
+    this.quiescent = this.outcome.then(settledCleanup, settledCleanup)
+    void this.quiescent.catch(() => { /* The execution owner consumes authoritative cleanup rejection. */ })
     this.done = this.outcome.then(outcome => {
       this.exitCode = outcome.exitCode
       this.signal = outcome.signal
@@ -170,13 +200,19 @@ async function executeTerminal(
   spec: ShellExecSpec,
   outputMaxBytes: number,
   timeoutMs: number,
-  existingOutput?: TailBuffer,
+  existingOutput: TailBuffer | undefined,
+  onDispatch: () => void,
+  onCleanupFailure: (error: unknown) => void,
 ): Promise<ExecutionOutcome> {
   const output = existingOutput ?? new TailBuffer(outputMaxBytes)
   if (spec.sandboxPolicy !== undefined && spec.sandboxPolicy.mode !== 'danger-full-access') {
     throw new Error(`dsh-remote-ssh/shell: ${spec.sandboxPolicy.mode} cannot confine arbitrary remote commands; use danger-full-access or a separately sandboxed SSH account`)
   }
-  const client = await remote.getClient()
+  const client = await remote.getClient(spec.signal).catch(error => {
+    if (spec.signal?.aborted) return undefined
+    throw error
+  })
+  if (client === undefined) return { exitCode: null, signal: 'SIGTERM', timedOut: false, aborted: true, output }
   const token = randomUUID()
   const terminalUri = `ahp-terminal:/${token}`
   const commandPath = posix.join(remote.runtimeRoot, `command-${token}.sh`)
@@ -185,7 +221,8 @@ async function executeTerminal(
   const stdinUri = fileUriFromPosixPath(stdinPath)
   const workdir = mapper.toRemotePath(spec.workdir)
   let subscription: Subscription | undefined
-  let terminalCreated = false
+  let terminalAttempted = false
+  let terminalExited = false
   let stdinCreated = false
   let timer: ReturnType<typeof setTimeout> | undefined
   let abortListener: (() => void) | undefined
@@ -200,13 +237,22 @@ async function executeTerminal(
   }
 
   try {
-    if (spec.signal?.aborted) stop('abort')
+    if (spec.signal !== undefined) {
+      abortListener = () => { stop('abort') }
+      spec.signal.addEventListener('abort', abortListener, { once: true })
+      if (spec.signal.aborted) stop('abort')
+    }
+    const cancelled = (): boolean => stopCause !== undefined
+    const cancelledResult = () => ({ exitCode: null, signal: 'SIGTERM' as const, timedOut: stopCause === 'timeout', aborted: stopCause === 'abort', output })
+    if (cancelled()) return cancelledResult()
     await client.resourceWrite({ uri: commandUri, data: spec.command, encoding: UTF8, contentType: 'text/x-shellscript' })
     if (spec.stdin !== undefined) {
       await client.resourceWrite({ uri: stdinUri, data: Buffer.from(spec.stdin).toString('base64'), encoding: 'base64' as ContentEncoding })
       stdinCreated = true
     }
+    if (cancelled()) return cancelledResult()
     const claim = { kind: 'client', clientId: remote.clientId } as TerminalClientClaim
+    terminalAttempted = true
     await client.request('createTerminal', {
       channel: terminalUri,
       claim,
@@ -215,15 +261,12 @@ async function executeTerminal(
       cols: 120,
       rows: 30,
     })
-    terminalCreated = true
+    if (cancelled()) return cancelledResult()
     const subscribed = await client.subscribe(terminalUri)
     subscription = subscribed.subscription
 
     if (timeoutMs > 0) timer = setTimeout(() => { stop('timeout') }, timeoutMs)
-    if (spec.signal !== undefined) {
-      abortListener = () => { stop('abort') }
-      spec.signal.addEventListener('abort', abortListener, { once: true })
-    }
+    if (cancelled()) return cancelledResult()
 
     const env = mergeEnvironment(mapper, spec)
     const envArgs = Object.entries(env).map(([key, value]) => `${key}=${quotePosix(value)}`).join(' ')
@@ -234,6 +277,7 @@ async function executeTerminal(
     // the RS/US bytes emitted by printf.
     const marker = new TerminalOutputCapture(token, output)
     const input = `printf '\\036DSH:${token}:BEGIN\\037'; env ${envArgs} ${quotePosix(shellCommand)} ${quotePosix(commandPath)} < ${stdinRedirect}; __dsh_status=$?; printf '\\036DSH:${token}:END:%s\\037' "$__dsh_status"; exit "$__dsh_status"\r`
+    onDispatch()
     client.dispatch(terminalUri, { type: ActionType.TerminalInput, data: input })
 
     let commandId: string | undefined
@@ -243,8 +287,6 @@ async function executeTerminal(
         stopped.then(cause => ({ kind: 'stop' as const, cause })),
       ])
       if (eventOrStop.kind === 'stop') {
-        await client.request('disposeTerminal', { channel: terminalUri }).catch(() => {})
-        terminalCreated = false
         return {
           exitCode: null,
           signal: 'SIGTERM',
@@ -287,6 +329,7 @@ async function executeTerminal(
           output,
         }
       } else if (action.type === ActionType.TerminalExited) {
+        terminalExited = true
         if (!marker.finished) {
           throw new Error(`Agent Host terminal exited before the output marker (exit ${action.exitCode ?? 'unknown'})`)
         }
@@ -302,10 +345,17 @@ async function executeTerminal(
   } finally {
     if (timer !== undefined) clearTimeout(timer)
     if (abortListener !== undefined) spec.signal?.removeEventListener('abort', abortListener)
-    await subscription?.close().catch(() => {})
-    if (terminalCreated) await client.request('disposeTerminal', { channel: terminalUri }).catch(() => {})
-    await client.resourceDelete({ uri: commandUri }).catch(() => {})
-    if (stdinCreated) await client.resourceDelete({ uri: stdinUri }).catch(() => {})
+    let cleanupFailure: Error | undefined
+    const cleanup: Promise<unknown>[] = [
+      client.resourceDelete({ uri: commandUri }),
+      ...(stdinCreated ? [client.resourceDelete({ uri: stdinUri })] : []),
+      ...(subscription === undefined ? [] : [subscription.close()]),
+    ]
+    if (terminalAttempted) cleanup.push(client.request('disposeTerminal', { channel: terminalUri }).catch(error => {
+      if (!terminalExited) cleanupFailure = new Error('dsh-remote-ssh: terminal shutdown unobservable at ' + terminalUri, { cause: error })
+    }))
+    await Promise.allSettled(cleanup)
+    if (cleanupFailure !== undefined) { onCleanupFailure(cleanupFailure); throw cleanupFailure }
   }
 }
 

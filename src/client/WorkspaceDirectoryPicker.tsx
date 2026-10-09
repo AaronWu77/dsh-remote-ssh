@@ -4,6 +4,12 @@ import type { RemoteDirectoryListing } from './api.ts'
 import { button, card, dim, primary, row, singleLineInput } from './styles.ts'
 import type { Translate } from './types.ts'
 import { ConnectionErrorNotice } from './ConnectionErrorNotice.tsx'
+import { useDialogFocus } from './use-dialog.ts'
+
+function absolutePath(value: string): string | undefined {
+  const path = value.trim()
+  return /^[/\\]|^[A-Za-z]:[/\\]/.test(path) ? path : undefined
+}
 
 export interface WorkspaceDirectoryPickerProps {
   t: Translate
@@ -11,7 +17,7 @@ export interface WorkspaceDirectoryPickerProps {
   title: string
   sourceKey: string
   initialPath: string
-  list: (path?: string) => Promise<RemoteDirectoryListing>
+  list: (path?: string, signal?: AbortSignal) => Promise<RemoteDirectoryListing>
   onPick: (path: string) => void
   onCancel: () => void
 }
@@ -23,32 +29,47 @@ export function WorkspaceDirectoryPicker(props: WorkspaceDirectoryPickerProps): 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<unknown>('')
   const requestGeneration = useRef(0)
+  const requestController = useRef<AbortController | undefined>(undefined)
+  const dialog = useDialogFocus(props.open, props.onCancel)
 
   const browse = async (path?: string): Promise<void> => {
     const generation = ++requestGeneration.current
+    requestController.current?.abort()
+    const controller = new AbortController()
+    requestController.current = controller
     setLoading(true)
     setError('')
     try {
-      const next = await props.list(path === undefined || path.trim() === '' ? undefined : path.trim())
-      if (generation !== requestGeneration.current) return
+      const next = await props.list(path === undefined || path.trim() === '' ? undefined : path.trim(), controller.signal)
+      if (controller.signal.aborted || generation !== requestGeneration.current) return
       setListing(next)
       setDraft(next.path)
     } catch (reason) {
-      if (generation === requestGeneration.current) setError(reason)
+      if (!controller.signal.aborted && generation === requestGeneration.current) setError(reason)
     } finally {
-      if (generation === requestGeneration.current) setLoading(false)
+      if (generation === requestGeneration.current) {
+        setLoading(false)
+        if (requestController.current === controller) requestController.current = undefined
+      }
     }
   }
 
   useEffect(() => {
     if (!props.open) return
-    const initial = props.initialPath.trim().startsWith('/') ? props.initialPath.trim() : undefined
+    const initial = absolutePath(props.initialPath)
+    setListing(undefined)
+    setDraft(props.initialPath.trim())
+    setError('')
     void browse(initial)
-    return () => { requestGeneration.current += 1 }
+    return () => {
+      requestGeneration.current += 1
+      requestController.current?.abort()
+      requestController.current = undefined
+    }
   }, [props.open, props.sourceKey])
 
   if (!props.open) return null
-  return <div style={{ position: 'fixed', inset: 0, zIndex: 1100, display: 'grid', placeItems: 'center', background: 'rgba(0,0,0,.42)' }} role="dialog" aria-modal="true" aria-label={props.title}>
+  return <div ref={dialog} tabIndex={-1} style={{ position: 'fixed', inset: 0, zIndex: 1100, display: 'grid', placeItems: 'center', background: 'rgba(0,0,0,.42)', outline: 'none' }} role="dialog" aria-modal="true" aria-label={props.title}>
     <div style={{ ...card, width: 'min(620px, calc(100vw - 32px))', maxHeight: 'min(720px, calc(100vh - 32px))' }}>
       <strong>{props.title}</strong>
       <div style={row}>

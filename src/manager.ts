@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { mkdir } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { basename, isAbsolute, relative, resolve, sep } from 'node:path'
+import { mkdir, realpath } from 'node:fs/promises'
+import { homedir, tmpdir } from 'node:os'
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { posix } from 'node:path'
-import { Context, Service, type Fiber, type Volatile } from '@deepseek-ai/cordis'
+import { Context, Service, type Volatile } from '@deepseek-ai/cordis'
 import type { FileSystem } from '@deepseek-ai/dsh-fs'
 import type { ShellExecutor } from '@deepseek-ai/dsh-shell'
 import type {} from '@deepseek-ai/dsh-settings'
@@ -45,6 +45,8 @@ export interface Config {
   sshConfigFile?: string
   servers?: RemoteSshServer[]
   workspaces?: RemoteSshWorkspace[]
+  /** Removed custom alias paths that must remain non-local across restarts. */
+  retiredAliases?: string[]
   /** Prefer a VS Code-compatible Remote SSH editor; download is the fallback. */
   openFileMode?: RemoteOpenFileMode
   /** Absolute executable path used when openFileMode is custom. */
@@ -54,6 +56,8 @@ export interface Config {
   startupTimeoutMs?: number
   requestTimeoutMs?: number
   shutdownTimeoutMs?: number
+  /** Bound for one SSH connect attempt, in milliseconds. */
+  connectTimeoutMs?: number
   /** SDK-supported protocol subset, in negotiation preference order. */
   protocolVersions?: string[]
 }
@@ -63,12 +67,14 @@ interface ResolvedConfig {
   sshConfigFile?: string
   servers: RemoteSshServer[]
   workspaces: RemoteSshWorkspace[]
+  retiredAliases: string[]
   openFileMode: RemoteOpenFileMode
   openFileEditorPath?: string
   openFileDownloadMaxBytes: number
   startupTimeoutMs: number
   requestTimeoutMs: number
   shutdownTimeoutMs: number
+  connectTimeoutMs: number
   protocolVersions: string[]
 }
 
@@ -102,7 +108,7 @@ interface RemoteHostContext {
 
 interface RemoteWorkspaceShellContext {
   ctx: Context
-  shell: ShellExecutor
+  shell: RemoteSshShellExecutor
   remote: RemoteSshRuntime
 }
 
@@ -159,16 +165,18 @@ export class RemoteSshManager extends Service {
   static inject = ['settings']
 
   static Config = z.object({
-    aliasRoot: z.string().default(resolve(process.env.DSH_HOME ?? resolve(process.env.USERPROFILE ?? '.', '.dsh'), 'remote-ssh', 'workspaces')),
+    aliasRoot: z.string().default(resolve(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'remote-ssh', 'workspaces')),
     sshConfigFile: z.string(),
     servers: z.array(serverSchema).default([]),
     workspaces: z.array(workspaceSchema).default([]),
+    retiredAliases: z.array(z.string()).default([]),
     openFileMode: z.union(['auto', 'vscode', 'cursor', 'windsurf', 'vscodium', 'custom', 'download'] as const).default('auto'),
     openFileEditorPath: z.string(),
     openFileDownloadMaxBytes: z.number().default(64 * 1024 * 1024),
     startupTimeoutMs: z.number().default(600_000),
     requestTimeoutMs: z.number().default(30_000),
     shutdownTimeoutMs: z.number().default(3_000),
+    connectTimeoutMs: z.number().default(10_000),
     protocolVersions: z.array(z.string()).default([...DSH_AHP_PROTOCOL_VERSIONS]),
   }).required().volatile()
 
@@ -177,6 +185,9 @@ export class RemoteSshManager extends Service {
   private readonly routes = new Map<string, RemoteWorkspaceRoute>()
   private readonly routeByWorkspaceId = new Map<string, RemoteWorkspaceRoute>()
   private readonly remoteAliases = new Set<string>()
+  private readonly executions = new Map<string, Set<{ terminate(): void | Promise<void>; done: Promise<unknown> }>>()
+  private readonly retiring = new Set<string>()
+  private mutationTail: Promise<void> = Promise.resolve()
   private readonly contexts = new Map<string, Promise<RemoteWorkspaceContext>>()
   private readonly shellContexts = new Map<string, Promise<RemoteWorkspaceShellContext>>()
   private readonly hosts = new Map<string, Promise<RemoteHostContext>>()
@@ -206,8 +217,9 @@ export class RemoteSshManager extends Service {
 
     ctx.effect(() => ctx.settings.configure({ auto: false }, ctx.fiber), 'Remote SSH settings presentation')
     const manager = this
-    ctx.on('loader/volatile-update', function (this: Fiber) {
-      if (this !== ctx.fiber) return
+    // The event reaches only the owning fiber, and its receiver is a Context
+    // (never the fiber), so every delivery belongs to this manager.
+    ctx.on('loader/volatile-update', () => {
       void manager.queueRefresh(manager.liveConfig.get() as ResolvedConfig).catch(error => { ctx.logger.error(error) })
     })
 
@@ -257,18 +269,20 @@ export class RemoteSshManager extends Service {
     openFileMode?: RemoteOpenFileMode
     openFileEditorPath?: string
   }): Promise<void> {
-    const next = this.snapshot()
-    if (input.sshConfigFile !== undefined) {
-      if (input.sshConfigFile.trim() === '') delete next.sshConfigFile
-      else next.sshConfigFile = input.sshConfigFile.trim()
-    }
-    if (input.openFileMode !== undefined) next.openFileMode = input.openFileMode
-    if (input.openFileEditorPath !== undefined) {
-      if (input.openFileEditorPath.trim() === '') delete next.openFileEditorPath
-      else next.openFileEditorPath = input.openFileEditorPath.trim()
-    }
-    this.validate(next)
-    await this.replaceSettings(next)
+    return this.mutation(async () => {
+      const next = this.snapshot()
+      if (input.sshConfigFile !== undefined) {
+        if (input.sshConfigFile.trim() === '') delete next.sshConfigFile
+        else next.sshConfigFile = input.sshConfigFile.trim()
+      }
+      if (input.openFileMode !== undefined) next.openFileMode = input.openFileMode
+      if (input.openFileEditorPath !== undefined) {
+        if (input.openFileEditorPath.trim() === '') delete next.openFileEditorPath
+        else next.openFileEditorPath = input.openFileEditorPath.trim()
+      }
+      this.validate(next)
+      await this.replaceSettings(next)
+    })
   }
 
   /** Browse directories through the server's shared AHP filesystem connection. */
@@ -295,60 +309,126 @@ export class RemoteSshManager extends Service {
   /** Create a server entry through the settings provider. */
   async addServer(input: Omit<RemoteSshServer, 'id'> & { id?: string }): Promise<RemoteSshServer> {
     const server: RemoteSshServer = { ...input, id: input.id ?? randomUUID() }
-    const next = this.snapshot()
-    next.servers.push(server)
-    this.validate(next)
-    await this.replaceSettings(next)
-    return server
+    return this.mutation(async () => {
+      const next = this.snapshot()
+      next.servers.push(server)
+      this.validate(next)
+      await this.replaceSettings(next)
+      return server
+    })
   }
 
   /** Create and register one remote workspace alias. */
   async addWorkspace(serverId: string, remotePath: string): Promise<RemoteWorkspaceRoute> {
-    const workspace: RemoteSshWorkspace = { id: randomUUID(), serverId, remotePath }
-    const next = this.snapshot()
-    next.workspaces.push(workspace)
-    this.validate(next)
-    await this.replaceSettings(next)
-    await this.refreshTail
-    const route = this.routeByWorkspaceId.get(workspace.id)
-    if (route === undefined) throw new Error(`remote workspace '${workspace.id}' was not published`)
-    return route
+    return this.mutation(async () => {
+      const normalized = posix.normalize(remotePath).replace(/[/]+$/, '') || '/'
+      const next = this.snapshot()
+      const existing = next.workspaces.find(workspace => workspace.serverId === serverId && (posix.normalize(workspace.remotePath).replace(/[/]+$/, '') || '/') === normalized)
+      if (existing) return this.workspace(existing.id)
+      const workspace: RemoteSshWorkspace = { id: randomUUID(), serverId, remotePath: normalized }
+      next.workspaces.push(workspace)
+      this.validate(next)
+      await this.replaceSettings(next)
+      return this.workspace(workspace.id)
+    })
   }
 
   /** Rename one remote workspace without changing its execution route. */
   async renameWorkspace(id: string, title: string): Promise<RemoteWorkspaceRoute> {
     const normalizedTitle = title.trim()
     if (normalizedTitle.length === 0) throw new Error('remote workspace title must not be empty')
-    const next = this.snapshot()
-    const workspace = next.workspaces.find(candidate => candidate.id === id)
-    if (workspace === undefined) throw new Error(`dsh-remote-ssh: unknown remote workspace '${id}'`)
-    workspace.title = normalizedTitle
-    this.validate(next)
-    await this.replaceSettings(next)
-    const route = this.routeByWorkspaceId.get(id)
-    if (route === undefined) throw new Error(`remote workspace '${id}' was not published`)
-    return route
+    return this.mutation(async () => {
+      const next = this.snapshot()
+      const workspace = next.workspaces.find(candidate => candidate.id === id)
+      if (workspace === undefined) throw new Error(`dsh-remote-ssh: unknown remote workspace '${id}'`)
+      workspace.title = normalizedTitle
+      this.validate(next)
+      await this.replaceSettings(next)
+      return this.workspace(id)
+    })
   }
 
   /** Remove execution routing while retaining alias, Workspace, and Session history. */
   async removeWorkspace(id: string): Promise<boolean> {
+    return this.mutation(() => this.removeMapping(id))
+  }
+
+  /** Delete a sidebar registration together with its execution mapping, retaining files and Session logs.
+   * @param path Registered canonical directory, absent when the workspace is already unknown.
+   * @param remove Core registration deletion; a rejection restores the mapping or reports rollback failure.
+   * @returns Whether the registration existed and was deleted.
+   */
+  removeRegisteredWorkspace(path: string | undefined, remove: () => Promise<boolean>): Promise<boolean> {
+    return this.mutation(async () => {
+      const route = path === undefined ? undefined : this.findAlias(path)
+      if (!route) return remove()
+      await this.removeMapping(route.workspace.id)
+      try { return await remove() } catch (error) {
+        const next = this.snapshot()
+        next.workspaces.push(route.workspace)
+        // removeMapping tombstoned both the configured and the canonical alias
+        // spelling; the rollback must clear both or the restored directory keeps
+        // failing closed as a removed remote alias.
+        const canonical = normalizeLocal(route.aliasPath)
+        const configured = normalizeLocal(resolve(route.workspace.aliasPath ?? resolve(next.aliasRoot, route.workspace.id)))
+        next.retiredAliases = next.retiredAliases.filter(alias => {
+          const normalized = normalizeLocal(resolve(alias))
+          return normalized !== canonical && normalized !== configured
+        })
+        try { await this.replaceSettings(next) } catch (rollbackError) {
+          throw new AggregateError([error, rollbackError], 'Workspace deletion failed and its disabled mapping could not be restored')
+        }
+        throw error
+      }
+    })
+  }
+
+  private async removeMapping(id: string): Promise<boolean> {
     const next = this.snapshot()
-    const before = next.workspaces.length
+    const removed = next.workspaces.find(workspace => workspace.id === id)
+    if (!removed) return false
+    const alias = resolve(removed.aliasPath ?? resolve(next.aliasRoot, removed.id))
+    const canonicalAlias = this.routeByWorkspaceId.get(id)?.aliasPath ?? alias
+    next.retiredAliases = [...new Set([...next.retiredAliases, alias, canonicalAlias])]
     next.workspaces = next.workspaces.filter(workspace => workspace.id !== id)
-    if (next.workspaces.length === before) return false
     await this.replaceSettings(next)
     return true
   }
 
+  /** Own a process or pending terminal allocation until it settles; removal cancels and drains it.
+   * @param route Current mapped workspace; retirement rejects new ownership.
+   * @param execution Cancellable owned activity with an authoritative settlement promise.
+   * @returns The release callback, invoked only after settlement.
+   */
+  ownExecution(route: RemoteWorkspaceRoute, execution: { terminate(): void | Promise<void>; done: Promise<unknown> }): () => void {
+    if (this.retiring.has(route.workspace.id) || !this.routeByWorkspaceId.has(route.workspace.id)) {
+      void Promise.resolve(execution.terminate()).catch(error => this.ctx.logger.warn(String(error)))
+      throw new Error('Remote workspace is being removed')
+    }
+    let owned = this.executions.get(route.workspace.id)
+    if (!owned) { owned = new Set(); this.executions.set(route.workspace.id, owned) }
+    owned.add(execution)
+    return () => { owned.delete(execution); if (owned.size === 0) this.executions.delete(route.workspace.id) }
+  }
+
+  private mutation<T>(run: () => Promise<T>): Promise<T> {
+    const pending = this.mutationTail.then(run)
+    this.mutationTail = pending.then(() => {}, () => {})
+    return pending
+  }
+
   /** Remove one server and tombstone all of its workspace execution routes. */
   async removeServer(id: string): Promise<boolean> {
-    const next = this.snapshot()
-    const before = next.servers.length
-    next.servers = next.servers.filter(server => server.id !== id)
-    if (next.servers.length === before) return false
-    next.workspaces = next.workspaces.filter(workspace => workspace.serverId !== id)
-    await this.replaceSettings(next)
-    return true
+    return this.mutation(async () => {
+      const next = this.snapshot()
+      const before = next.servers.length
+      next.servers = next.servers.filter(server => server.id !== id)
+      if (next.servers.length === before) return false
+      next.retiredAliases = [...new Set([...next.retiredAliases, ...next.workspaces.filter(workspace => workspace.serverId === id).flatMap(workspace => [resolve(workspace.aliasPath ?? resolve(next.aliasRoot, workspace.id)), this.routeByWorkspaceId.get(workspace.id)?.aliasPath ?? resolve(workspace.aliasPath ?? resolve(next.aliasRoot, workspace.id))])])]
+      next.workspaces = next.workspaces.filter(workspace => workspace.serverId !== id)
+      await this.replaceSettings(next)
+      return true
+    })
   }
 
   /** Pre-register a local directory with the stable LOCAL display prefix. */
@@ -365,21 +445,21 @@ export class RemoteSshManager extends Service {
   /** Resolve a tool path/cwd into the only execution world allowed to handle it. */
   route(path?: string, cwd?: string): ExecutionRoute {
     const cwdRoute = cwd === undefined ? undefined : this.findAlias(cwd)
-    if (cwdRoute !== undefined) return cwdRoute
+    if (cwdRoute !== undefined) return this.workspace(cwdRoute.workspace.id)
     if (cwd !== undefined && this.wasRemoteAlias(cwd)) {
       throw new Error(`dsh-remote-ssh: workspace alias is no longer configured: ${cwd}`)
     }
     if (path !== undefined && isAbsolute(path)) {
       const pathRoute = this.findAlias(path)
-      if (pathRoute !== undefined) return pathRoute
+      if (pathRoute !== undefined) return this.workspace(pathRoute.workspace.id)
       if (this.wasRemoteAlias(path)) {
         throw new Error(`dsh-remote-ssh: workspace alias is no longer configured: ${path}`)
       }
     }
     const remotePathRoute = cwd === undefined ? undefined : this.findRemotePath(cwd)
-    if (remotePathRoute !== undefined) return remotePathRoute
+    if (remotePathRoute !== undefined) return this.workspace(remotePathRoute.workspace.id)
     const absoluteRemotePathRoute = path === undefined ? undefined : this.findRemotePath(path)
-    if (absoluteRemotePathRoute !== undefined) return absoluteRemotePathRoute
+    if (absoluteRemotePathRoute !== undefined) return this.workspace(absoluteRemotePathRoute.workspace.id)
     return { kind: 'local' }
   }
 
@@ -451,12 +531,13 @@ export class RemoteSshManager extends Service {
   /** Lookup a published route by its durable workspace id. */
   workspace(id: string): RemoteWorkspaceRoute {
     const route = this.routeByWorkspaceId.get(id)
-    if (route === undefined) throw new Error(`dsh-remote-ssh: unknown or removed remote workspace '${id}'`)
+    if (route === undefined || this.retiring.has(id)) throw new Error(`dsh-remote-ssh: unknown or removed remote workspace '${id}'`)
     return route
   }
 
   /** Lazily boot the AHP filesystem context for one remote workspace. */
   async workspaceContext(route: RemoteWorkspaceRoute): Promise<RemoteWorkspaceContext> {
+    this.workspace(route.workspace.id)
     let pending = this.contexts.get(route.workspace.id)
     if (pending === undefined) {
       pending = this.createWorkspaceContext(route)
@@ -474,7 +555,8 @@ export class RemoteSshManager extends Service {
   }
 
   /** AHP-backed shell view sharing the host runtime but retaining workspace path mapping. */
-  async workspaceShell(route: RemoteWorkspaceRoute, dialect: 'bash' | 'pwsh'): Promise<ShellExecutor> {
+  async workspaceShell(route: RemoteWorkspaceRoute, dialect: 'bash' | 'pwsh'): Promise<RemoteSshShellExecutor> {
+    this.workspace(route.workspace.id)
     const key = `${route.workspace.id}:${dialect}`
     let pending = this.shellContexts.get(key)
     if (pending === undefined) {
@@ -497,6 +579,7 @@ export class RemoteSshManager extends Service {
     this.validate(config)
     const policyChanged = connectionPolicyKey(this.current) !== connectionPolicyKey(config)
     await mkdir(resolve(tmpdir(), 'dsh-ssh'), { recursive: true })
+    for (const alias of config.retiredAliases) this.remoteAliases.add(normalizeLocal(resolve(alias)))
     const servers = new Map(config.servers.map(server => [server.id, server]))
     const nextRoutes = new Map<string, RemoteWorkspaceRoute>()
     const nextById = new Map<string, RemoteWorkspaceRoute>()
@@ -504,14 +587,24 @@ export class RemoteSshManager extends Service {
       const server = servers.get(workspace.serverId) as RemoteSshServer
       const aliasPath = resolve(workspace.aliasPath ?? resolve(config.aliasRoot, workspace.id))
       await mkdir(aliasPath, { recursive: true })
-      const canonicalAlias = resolve(aliasPath)
+      const canonicalAlias = await realpath(aliasPath)
+      if (nextRoutes.has(normalizeLocal(canonicalAlias))) throw new Error(`dsh-remote-ssh: workspace aliases resolve to the same directory: ${canonicalAlias}`)
       const route: RemoteWorkspaceRoute = {
         kind: 'remote', server, workspace, aliasPath: canonicalAlias,
         mapper: new WorkspacePathMapper(canonicalAlias, workspace.remotePath),
       }
       nextRoutes.set(normalizeLocal(canonicalAlias), route)
       nextById.set(workspace.id, route)
+      this.remoteAliases.add(normalizeLocal(aliasPath))
       this.remoteAliases.add(normalizeLocal(canonicalAlias))
+    }
+    const removedIds = [...this.routeByWorkspaceId.keys()].filter(id => !nextById.has(id) || routeRuntimeKey(this.routeByWorkspaceId.get(id)!) !== routeRuntimeKey(nextById.get(id)!))
+    for (const id of removedIds) this.retiring.add(id)
+    for (const id of removedIds) {
+      const owned = [...this.executions.get(id) ?? []]
+      await Promise.all(owned.map(execution => execution.terminate()))
+      await Promise.all(owned.map(execution => execution.done))
+      this.executions.delete(id)
     }
     for (const [id, pending] of this.contexts) {
       const previous = this.routeByWorkspaceId.get(id)
@@ -545,6 +638,7 @@ export class RemoteSshManager extends Service {
     for (const [key, value] of nextRoutes) this.routes.set(key, value)
     for (const [key, value] of nextById) this.routeByWorkspaceId.set(key, value)
     this.current = structuredClone(config)
+    for (const id of removedIds) this.retiring.delete(id)
     await this.registerAllWorkspaces()
   }
 
@@ -574,23 +668,27 @@ export class RemoteSshManager extends Service {
     const normalized = posix.normalize(path)
     let best: RemoteWorkspaceRoute | undefined
     let bestLength = -1
+    let ambiguous = false
     for (const route of this.routeByWorkspaceId.values()) {
-      const root = posix.normalize(route.workspace.remotePath)
+      const root = posix.normalize(route.workspace.remotePath).replace(/[/]+$/, '') || '/'
       const rel = posix.relative(root, normalized)
       if (rel !== '' && (rel === '..' || rel.startsWith('../') || posix.isAbsolute(rel))) continue
       if (root.length > bestLength) {
         best = route
         bestLength = root.length
+        ambiguous = false
       } else if (root.length === bestLength && best?.workspace.id !== route.workspace.id) {
-        throw new Error(`dsh-remote-ssh: remote path matches multiple workspaces: ${path}`)
+        if (best?.server.id !== route.server.id) ambiguous = true
+        // Existing duplicate aliases share one execution world; keep the first durable route.
       }
     }
+    if (ambiguous) throw new Error(`dsh-remote-ssh: remote path matches multiple workspaces: ${path}`)
     return best
   }
 
   private wasRemoteAlias(path: string): boolean {
     const absolute = normalizeLocal(resolve(path))
-    return [...this.remoteAliases].some(alias => isContained(alias, absolute))
+    return isContained(normalizeLocal(resolve(this.current.aliasRoot)), absolute) || [...this.remoteAliases].some(alias => isContained(alias, absolute))
   }
 
   private async createWorkspaceContext(route: RemoteWorkspaceRoute): Promise<RemoteWorkspaceContext> {
@@ -631,7 +729,7 @@ export class RemoteSshManager extends Service {
         remoteWorkspace: route.workspace.remotePath,
         shellCommand: dialect,
       })
-      return { ctx: child, shell: child.shell, remote: host.remote }
+      return { ctx: child, shell: child.shell as RemoteSshShellExecutor, remote: host.remote }
     } catch (error) {
       await child.fiber.dispose().catch(() => {})
       throw error
@@ -662,13 +760,17 @@ export class RemoteSshManager extends Service {
   }
 
   private transportFor(server: RemoteSshServer): RemoteSshTransport {
-    let executable = server.sshExecutable ?? 'ssh'
-    let multiplexed = process.platform !== 'win32'
-    // Both Windows OpenSSH and Git-for-Windows accepted ControlMaster syntax
-    // in local probes but reset every multiplexed session. Do not enable a
-    // transport that silently reconnects and contaminates remote stderr.
-    if (process.platform === 'win32') multiplexed = false
-    const args = [...(server.sshArgs ?? [])]
+    const executable = server.sshExecutable ?? 'ssh'
+    // Neither Windows OpenSSH nor Git-for-Windows honours ControlMaster; both
+    // accepted the syntax in local probes and then reset every session.
+    const multiplexed = process.platform !== 'win32'
+    const args = [
+      // No interactive prompt is possible on any of these channels, so a failed
+      // authentication must fail fast instead of waiting for input that never comes.
+      '-o', 'BatchMode=yes',
+      '-o', `ConnectTimeout=${Math.ceil(this.current.connectTimeoutMs / 1000)}`,
+      ...(server.sshArgs ?? []),
+    ]
     if (multiplexed) {
       // Include the local process id: a crashed/closed DSH instance may leave a
       // short-lived ControlPersist socket, and a new instance must never bind
@@ -695,6 +797,7 @@ export class RemoteSshManager extends Service {
 
   private validate(config: ResolvedConfig): void {
     if (!isAbsolute(config.aliasRoot)) throw new Error('dsh-remote-ssh: aliasRoot must be an absolute local path')
+    if (config.retiredAliases.some(alias => !isAbsolute(alias))) throw new Error('retiredAliases must contain absolute local paths')
     if (config.sshConfigFile !== undefined && !isAbsolute(config.sshConfigFile)) throw new Error('dsh-remote-ssh: sshConfigFile must be an absolute path')
     if (config.openFileEditorPath !== undefined && !isAbsolute(config.openFileEditorPath)) throw new Error('dsh-remote-ssh: openFileEditorPath must be an absolute path')
     if (config.openFileMode === 'custom' && config.openFileEditorPath === undefined) throw new Error('dsh-remote-ssh: custom openFileMode requires openFileEditorPath')
@@ -702,6 +805,7 @@ export class RemoteSshManager extends Service {
     if (!Number.isSafeInteger(config.startupTimeoutMs) || config.startupTimeoutMs <= 0) throw new Error('dsh-remote-ssh: startupTimeoutMs must be a positive integer')
     if (!Number.isSafeInteger(config.requestTimeoutMs) || config.requestTimeoutMs <= 0) throw new Error('dsh-remote-ssh: requestTimeoutMs must be a positive integer')
     if (!Number.isSafeInteger(config.shutdownTimeoutMs) || config.shutdownTimeoutMs <= 0) throw new Error('dsh-remote-ssh: shutdownTimeoutMs must be a positive integer')
+    if (!Number.isSafeInteger(config.connectTimeoutMs) || config.connectTimeoutMs <= 0) throw new Error('dsh-remote-ssh: connectTimeoutMs must be a positive integer')
     validateProtocolVersions(config.protocolVersions)
     const serverIds = new Set<string>()
     for (const server of config.servers) {
@@ -716,6 +820,8 @@ export class RemoteSshManager extends Service {
       if (!ID_PATTERN.test(workspace.id) || workspaceIds.has(workspace.id)) throw new Error(`dsh-remote-ssh: invalid or duplicate workspace id '${workspace.id}'`)
       if (!serverIds.has(workspace.serverId)) throw new Error(`dsh-remote-ssh: workspace '${workspace.id}' refers to unknown server '${workspace.serverId}'`)
       if (!posix.isAbsolute(workspace.remotePath)) throw new Error(`dsh-remote-ssh: workspace '${workspace.id}' remotePath must be an absolute POSIX path`)
+      // A root mapping would claim every POSIX-absolute path on a POSIX host.
+      if (posix.normalize(workspace.remotePath) === '/') throw new Error(`dsh-remote-ssh: workspace '${workspace.id}' must not map the remote root; register a subdirectory instead`)
       if (workspace.title !== undefined && workspace.title.trim().length === 0) throw new Error(`dsh-remote-ssh: workspace '${workspace.id}' title must be non-empty`)
       const alias = normalizeLocal(resolve(workspace.aliasPath ?? resolve(config.aliasRoot, workspace.id)))
       if (aliases.has(alias)) throw new Error(`dsh-remote-ssh: duplicate workspace alias '${alias}'`)
@@ -726,7 +832,7 @@ export class RemoteSshManager extends Service {
 }
 
 function connectionPolicyKey(config: ResolvedConfig): string {
-  return JSON.stringify([config.protocolVersions, config.startupTimeoutMs, config.requestTimeoutMs, config.shutdownTimeoutMs])
+  return JSON.stringify([config.protocolVersions, config.startupTimeoutMs, config.requestTimeoutMs, config.shutdownTimeoutMs, config.connectTimeoutMs])
 }
 
 function serverRuntimeKey(server: RemoteSshServer): string {

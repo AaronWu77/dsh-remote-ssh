@@ -53,7 +53,8 @@ export async function saveRemoteSpill(
     sandboxPolicy: { mode: 'danger-full-access', workspaceRoot: route.aliasPath },
   }))).result()
   if (prepared.exitCode !== 0) {
-    throw new Error(`dsh-remote-ssh: failed to prepare remote spill directory: ${prepared.stderr.text.slice(-2048)}`)
+    // The remote executor captures one PTY stream, so stderr arrives in stdout.
+    throw new Error(`dsh-remote-ssh: failed to prepare remote spill directory: ${prepared.stdout.text.slice(-2048)}`)
   }
 
   const client = await remote.getClient()

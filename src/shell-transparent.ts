@@ -71,9 +71,8 @@ export class TransparentShellExecutor extends ShellExecutor {
   }
 
   override resolve(request: ShellExecRequest): ShellExecSpec {
-    const timeoutMs = Math.min(Math.floor(request.timeoutMs ?? this.config.timeoutMs), this.config.maxTimeoutMs)
-    const stdoutMaxBytes = Math.floor(request.stdoutMaxBytes ?? this.config.maxOutputBytes)
-    if (timeoutMs <= 0 || stdoutMaxBytes <= 0) throw new Error('dsh-remote-ssh/shell-transparent: timeout and output limits must be positive')
+    const timeoutMs = Math.min(positiveLimit(request.timeoutMs ?? this.config.timeoutMs, 'timeoutMs'), this.config.maxTimeoutMs)
+    const stdoutMaxBytes = positiveLimit(request.stdoutMaxBytes ?? this.config.maxOutputBytes, 'stdoutMaxBytes')
     return {
       command: request.command,
       workdir: request.workdir ?? this.config.cwd ?? process.cwd(),
@@ -187,7 +186,7 @@ export class TransparentShellExecutor extends ShellExecutor {
       },
       graceMs: this.config.graceMs,
       signal,
-      env: { NO_COLOR: '1', PAGER: 'cat', GIT_PAGER: 'cat', ...spec.env, ...spec.dshEnv },
+      env: { NO_COLOR: '1', TERM: 'dumb', PAGER: 'cat', GIT_PAGER: 'cat', ...spec.env, ...spec.dshEnv },
     }
   }
 
@@ -201,6 +200,12 @@ function assertUnconfined(spec: ShellExecSpec): void {
   if (spec.sandboxPolicy !== undefined && spec.sandboxPolicy.mode !== 'danger-full-access') {
     throw new Error(`dsh-remote-ssh: transparent shell cannot enforce ${spec.sandboxPolicy.mode} across SSH; select danger-full-access or confine the SSH account`)
   }
+}
+
+/** Reject non-finite limits before clamping: `Math.floor(NaN)` and `Infinity` both pass a `<= 0` test. */
+function positiveLimit(value: number, name: string): number {
+  if (!Number.isFinite(value) || value <= 0) throw new Error(`dsh-remote-ssh/shell-transparent: ${name} must be a positive finite number`)
+  return Math.floor(value)
 }
 
 function requireCollected(handle: SubprocessHandle): { stdout: SubprocessOutputReader; stderr: SubprocessOutputReader } {

@@ -1,73 +1,84 @@
-import { resolve } from 'node:path'
 import { ActionType } from '@microsoft/agent-host-protocol'
-import type { AhpClient, Subscription, SubscriptionEvent } from '@microsoft/agent-host-protocol/client'
-import { Context } from '@deepseek-ai/cordis'
-import type { RemoteSshRuntime } from '../src/index.ts'
-import { WorkspacePathMapper } from '../src/index.ts'
-import RemoteSshShellExecutor from '../src/shell.ts'
-import { describe, expect, it } from 'vitest'
-
-class FakeSubscription implements AsyncIterableIterator<SubscriptionEvent> {
-  private readonly events: SubscriptionEvent[] = []
-  push(action: object): void {
-    this.events.push({ type: 'action', params: { channel: 'ahp-terminal:/test', serverSeq: this.events.length + 1, action } } as SubscriptionEvent)
-  }
-  async next(): Promise<IteratorResult<SubscriptionEvent>> {
-    while (this.events.length === 0) await new Promise(resolvePromise => setTimeout(resolvePromise, 0))
-    return { value: this.events.shift()!, done: false }
-  }
-  async return(): Promise<IteratorResult<SubscriptionEvent>> { return { value: undefined, done: true } }
-  [Symbol.asyncIterator](): this { return this }
-  async close(): Promise<void> {}
-}
-
-class FakeTerminalAhp {
-  readonly subscription = new FakeSubscription()
-  readonly writes: string[] = []
-  disposed = false
-
-  async resourceWrite({ uri }: { uri: string }) { this.writes.push(uri); return {} }
-  async resourceDelete() { return {} }
-  async request(method: string) {
-    if (method === 'disposeTerminal') this.disposed = true
-    return {}
-  }
-  async subscribe() {
-    return { result: { snapshot: { resource: 'ahp-terminal:/test', state: {} } }, subscription: this.subscription as unknown as Subscription }
-  }
-  dispatch(_channel: string, action: { data: string }) {
-    const token = /DSH:([0-9a-f-]+):BEGIN/.exec(action.data)?.[1]
-    if (token === undefined) throw new Error('missing output marker')
-    this.subscription.push({ type: ActionType.TerminalData, data: `echoed input\r\n\x1eDSH:${token}:BE` })
-    this.subscription.push({ type: ActionType.TerminalData, data: `GIN\x1fremote-output\r\n\x1eDSH:${token}:END:` })
-    this.subscription.push({ type: ActionType.TerminalData, data: '7\x1ftrailing prompt' })
-    this.subscription.push({ type: ActionType.TerminalExited, exitCode: 7 })
-    return { clientSeq: 1 }
-  }
-}
-
-async function setup() {
-  const ctx = new Context()
-  const client = new FakeTerminalAhp()
-  const local = resolve('tests', 'shell-alias')
-  const runtime = {
-    mapper: new WorkspacePathMapper(local, '/srv/project'),
-    runtimeRoot: '/tmp/dsh/test',
-    clientId: 'test-client',
-    getClient: async () => client as unknown as AhpClient,
-  } as unknown as RemoteSshRuntime
-  ctx.provide('remoteSsh', runtime)
-  await ctx.plugin(RemoteSshShellExecutor, {
-    defaultTimeoutMs: 1000,
-    maxTimeoutMs: 2000,
-    outputMaxBytes: 1024,
-    maxOutputMaxBytes: 4096,
-    shellCommand: 'bash',
-  })
-  return { ctx, client, local }
-}
+import RemoteRuntime, { type AhpConnection } from '../src/index.ts'
+import type { RemoteShellExecution } from '../src/shell.ts'
+import { setup } from './fixtures/terminal-client.ts'
+import { describe, expect, it, vi } from 'vitest'
 
 describe('RemoteSshShellExecutor', () => {
+  it.each(['create', 'subscribe', 'dispatch'] as const)('rejects unknown terminal cleanup after cancellation at %s', async stage => {
+    const { ctx, client } = await setup()
+    try {
+      const controller = new AbortController()
+      client.controller = controller
+      client.abortAt = stage
+      client.disposeError = new Error('disposal acknowledgement lost')
+      const execution = await ctx.shell.execute(ctx.shell.resolve({ command: 'must-stop', signal: controller.signal })) as RemoteShellExecution
+      await expect(execution.result()).rejects.toThrow('terminal shutdown unobservable')
+      await expect(execution.quiescent).rejects.toThrow('terminal shutdown unobservable')
+      expect(await execution.dispatched).toBe(stage === 'dispatch')
+    } finally { await ctx.fiber.dispose() }
+  })
+
+  it.each([false, true])('distinguishes failed allocation from cleanup uncertainty (unknown disposal: %s)', async unknown => {
+    const { ctx, client } = await setup()
+    try {
+      client.createError = new Error('terminal allocation reply lost')
+      if (unknown) client.disposeError = new Error('terminal disposal reply lost')
+      const execution = await ctx.shell.execute(ctx.shell.resolve({ command: 'not-submitted' })) as RemoteShellExecution
+      await expect(execution.result()).rejects.toThrow(unknown ? 'terminal shutdown unobservable' : 'terminal allocation reply lost')
+      expect(await execution.dispatched).toBe(false)
+      if (unknown) await expect(execution.quiescent).rejects.toThrow('terminal shutdown unobservable')
+      else { await expect(execution.quiescent).resolves.toBeUndefined(); expect(client.disposed).toBe(true) }
+    } finally { await ctx.fiber.dispose() }
+  })
+
+  it('retains an early terminal-exit operation error while accepting observed shutdown without disposal ACK', async () => {
+    const { ctx, client } = await setup()
+    try {
+      client.exitedWithoutMarker = true
+      client.disposeError = new Error('disposal acknowledgement lost after exit')
+      const execution = await ctx.shell.execute(ctx.shell.resolve({ command: 'early-exit' })) as RemoteShellExecution
+      await expect(execution.result()).rejects.toThrow('terminal exited before the output marker')
+      await expect(execution.quiescent).resolves.toBeUndefined()
+      expect(await execution.dispatched).toBe(true)
+    } finally { await ctx.fiber.dispose() }
+  })
+
+  it('settles ordinary shell cancellation while shared readiness remains pending for another workspace', async () => {
+    const { ctx, client, runtime, local } = await setup()
+    const sharedClient = await runtime.getClient()
+    let ready!: (connection: AhpConnection) => void
+    const pending = new Promise<AhpConnection>(resolve => { ready = resolve })
+    runtime.getConnection = () => pending
+    vi.spyOn(runtime, 'getClient').mockImplementation(signal => RemoteRuntime.prototype.getClient.call(runtime, signal))
+    try {
+      const other = runtime.getClient()
+      const controller = new AbortController()
+      const execution = await ctx.shell.execute(ctx.shell.resolve({ command: 'must-not-run', workdir: local, signal: controller.signal }))
+      controller.abort(new Error('caller cancelled'))
+      expect(await execution.result()).toMatchObject({ aborted: true, exitCode: null })
+      expect(client.dispatched).toBe(0)
+      expect(client.writes).toEqual([])
+      ready({ client: sharedClient, protocolVersion: '1.0.0' })
+      expect(await other).toBe(client)
+    } finally { ready({ client: sharedClient, protocolVersion: '1.0.0' }); await ctx.fiber.dispose() }
+  })
+
+  it.each(['before', 'write', 'create', 'subscribe'] as const)('does not dispatch a command cancelled during %s allocation', async stage => {
+    const { ctx, client } = await setup()
+    try {
+      const controller = new AbortController()
+      client.controller = controller
+      if (stage === 'before') controller.abort()
+      else client.abortAt = stage
+      const spec = ctx.shell.resolve({ command: 'must-not-run', signal: controller.signal })
+      const result = await (await ctx.shell.execute(spec)).result()
+      expect(result).toMatchObject({ aborted: true, exitCode: null })
+      expect(client.dispatched).toBe(0)
+      if (stage === 'create' || stage === 'subscribe') expect(client.disposed).toBe(true)
+    } finally { await ctx.fiber.dispose() }
+  })
+
   it('projects AHP terminal command actions into a ShellRunResult', async () => {
     const { ctx, client, local } = await setup()
     const execution = await ctx.shell.execute(ctx.shell.resolve({

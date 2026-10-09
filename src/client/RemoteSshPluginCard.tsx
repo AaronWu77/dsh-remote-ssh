@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { ReactElement } from 'react'
-import { request, SETTINGS_PATH, STATE_PATH } from './api.ts'
-import type { CatalogState, OpenFileMode } from './api.ts'
+import { fetchCatalogState, request, SETTINGS_PATH } from './api.ts'
+import type { OpenFileMode } from './api.ts'
 import { button, dim, primary, row, singleLineInput } from './styles.ts'
 import { requireTranslate } from './types.ts'
 import type { LocalizedProps } from './types.ts'
@@ -21,7 +21,7 @@ export function RemoteSshPluginCard({ t: optionalT }: LocalizedProps): ReactElem
   const [failed, setFailed] = useState(false)
 
   useEffect(() => {
-    void request<CatalogState>(STATE_PATH).then(state => {
+    void fetchCatalogState().then(state => {
       const value = state.customConfigFile ?? ''
       const editor = state.openFileEditorPath ?? ''
       setCurrent(value)
@@ -69,7 +69,7 @@ export function RemoteSshPluginCard({ t: optionalT }: LocalizedProps): ReactElem
 
   return <li style={{ listStyle: 'none', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 12, overflow: 'hidden' }}>
     <button type="button" style={{ ...button, width: '100%', border: 0, borderRadius: 0, padding: 14, textAlign: 'left' }} aria-expanded={open} onClick={() => { setOpen(value => !value) }}>
-      <b>Remote SSH</b><span style={{ display: 'block', ...dim }}>{t('pluginSummary')}</span>
+      <b>{t('title')}</b><span style={{ display: 'block', ...dim }}>{t('pluginSummary')}</span>
     </button>
     {open ? <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
       <label htmlFor="plugin-remote-ssh-config"><b>{t('sshConfigLabel')}</b></label>

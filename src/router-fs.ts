@@ -16,6 +16,7 @@ import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox'
 import type { RemoteSshManager, RemoteWorkspaceRoute } from './manager.ts'
 import { binaryWriter } from './binary-fs.ts'
 import type { FsBytesWriteOutcome } from './binary-fs.ts'
+import { fileUriFromPosixPath } from './index.ts'
 
 interface RemoteTargetEnvelope {
   workspaceId: string
@@ -49,11 +50,23 @@ export class TransparentFileSystem extends FileSystem {
     return decoded === undefined ? this.local.processPath(target) : target.displayPath
   }
 
+  /** Map host assets only through the local execution world; remote aliases are not host files.
+   * @param hostPath Absolute path to a host-owned asset.
+   * @returns Local process path, or undefined for a remote alias or an unmapped asset.
+   */
+  override processPathFromHostPath(hostPath: string): string | undefined {
+    if (this.manager.route(hostPath).kind === 'remote') return undefined
+    return this.local.processPathFromHostPath(hostPath)
+  }
+
   override fileUrl(target: FsTarget): string {
     const decoded = decodeTarget(target)
     if (decoded === undefined) return this.local.fileUrl(target)
-    const route = this.manager.workspace(decoded.workspaceId)
-    return `dsh-remote-ssh://${encodeURIComponent(route.server.id)}/${encodeURIComponent(route.workspace.id)}/${encodeURIComponent(decoded.targetKey)}`
+    // The seam promises the canonical `file:` URI of the target's execution
+    // world; a remote target's world is the remote filesystem, so its display
+    // path is what the URI names.
+    this.manager.workspace(decoded.workspaceId)
+    return fileUriFromPosixPath(target.displayPath)
   }
 
   override contains(parent: FsTarget, child: FsTarget): boolean {

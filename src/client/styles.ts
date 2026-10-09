@@ -8,3 +8,4 @@ export const singleLineInput: CSSProperties = { ...input, minWidth: 0, width: 52
 export const button: CSSProperties = { padding: '7px 13px', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 18, background: 'var(--dsw-alias-bg-layer-1)', color: 'var(--dsw-alias-label-primary)', cursor: 'pointer' }
 export const primary: CSSProperties = { ...button, borderColor: 'var(--dsw-alias-brand-primary)', background: 'var(--dsw-alias-brand-primary)', color: 'white' }
 export const dim: CSSProperties = { margin: 0, color: 'var(--dsw-alias-label-secondary)', fontSize: 14 }
+export const error: CSSProperties = { margin: 0, color: 'var(--dsw-alias-state-error-primary)', fontSize: 14 }

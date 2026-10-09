@@ -211,8 +211,23 @@ export class RemoteSshRuntime extends Service {
     return connection
   }
 
-  async getClient(): Promise<AhpClient> {
-    return (await this.getConnection()).client
+  /** Wait for the shared client without letting one caller cancel other workspaces' connection.
+   * @param signal Optional caller lifetime; cancellation ends only this readiness wait.
+   * @returns The active shared client; rejects with the caller's cancellation or startup failure.
+   */
+  async getClient(signal?: AbortSignal): Promise<AhpClient> {
+    signal?.throwIfAborted()
+    const ready = this.getConnection()
+    if (signal === undefined) return (await ready).client
+    return new Promise<AhpClient>((resolve, reject) => {
+      const onAbort = () => { signal.removeEventListener('abort', onAbort); reject(signal.reason) }
+      signal.addEventListener('abort', onAbort, { once: true })
+      if (signal.aborted) onAbort()
+      void ready.then(connection => {
+        signal.removeEventListener('abort', onAbort)
+        if (!signal.aborted) resolve(connection.client)
+      }, error => { signal.removeEventListener('abort', onAbort); reject(error) })
+    })
   }
 
   /** Workspace mapper for the legacy single-workspace providers. */

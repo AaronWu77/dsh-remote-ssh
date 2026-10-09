@@ -4,9 +4,13 @@ import { applyEntryPatches, entryListSchema, type PatchOptions } from '@deepseek
 import type { EntryOptions } from '@deepseek-ai/cordis-plugin-loader'
 import { load } from 'js-yaml'
 import { describe, expect, it } from 'vitest'
+import { shippedWorkspace } from './fixtures/shipped-workspace.ts'
+import { loadOverlayPatches, composeEntries } from '@deepseek-ai/dsh-app-boot'
+import { fileURLToPath } from 'node:url'
 
 const BASE_ROWS: EntryOptions[] = [
   { id: 'ptc-runtime', name: '@deepseek-ai/dsh-ptc-runtime-node' },
+  shippedWorkspace(),
   { id: 'subprocess', name: '@deepseek-ai/dsh-subprocess-local' },
   { id: 'fs-sandbox', name: '@deepseek-ai/dsh-fs-sandbox' },
   { id: 'bash-sandbox', name: '@deepseek-ai/dsh-bash-sandbox', disabled: true },
@@ -23,6 +27,16 @@ const BASE_ROWS: EntryOptions[] = [
 ]
 
 describe('bundle overlay', () => {
+  it('replaces the shipped Web workspace provider in real base and Web bundle composition', () => {
+    const warnings: string[] = []
+    const layers = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'].map(name => loadOverlayPatches('shipped-workspace-test', fileURLToPath(import.meta.resolve(name + '/cordis.patch.yml'))))
+    const patches = load(readFileSync(join(import.meta.dirname, '..', 'cordis.patch.yml'), 'utf8'), { schema: entryListSchema }) as PatchOptions[]
+    const rows = composeEntries([...layers, patches], message => warnings.push(message))
+    const providers = rows.filter(row => !row.disabled && ['@deepseek-ai/dsh-workspace', 'dsh-remote-ssh/workspace-registry'].includes(String(row.name)))
+    expect(warnings).toEqual([])
+    expect(providers).toMatchObject([{ id: 'remote-ssh-workspace-registry', name: 'dsh-remote-ssh/workspace-registry' }])
+  })
+
   it('moves local providers behind cwd routers without adding remote tool names', () => {
     const source = readFileSync(join(import.meta.dirname, '..', 'cordis.patch.yml'), 'utf8')
     const patches = load(source, { schema: entryListSchema }) as PatchOptions[]
@@ -33,6 +47,8 @@ describe('bundle overlay', () => {
     const byId = new Map(rows.map(row => [row.id, row]))
 
     expect(warnings).toEqual([])
+    expect(byId.get(shippedWorkspace().id)?.disabled).toBe(true)
+    expect(byId.get('remote-ssh-workspace-registry')?.name).toBe('dsh-remote-ssh/workspace-registry')
     expect(byId.get('ptc-runtime')?.isolate?.subprocess).toBe('remote-ssh/local-subprocess')
     expect(byId.get('ptc-runtime')?.isolate?.fs).toBe('remote-ssh/local-fs')
     expect(byId.get('remote-ssh-local-world')?.isolate?.fs).toBe('remote-ssh/local-fs')

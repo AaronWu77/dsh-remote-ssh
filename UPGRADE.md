@@ -1,6 +1,16 @@
-# Upgrade to 0.2.4-aaron.4
+# Upgrade to 0.2.4-aaron.8
 
 This fork targets DSH 0.2.0-rc.2. Install the immutable local archive, not the upstream npm package. Preserve the previous archive and profile manifest/lockfile/patch before installation; start a verification profile without the live Web listener before activating the update. Restart the live Web profile only during an agreed maintenance window, then refresh the existing GUI URL.
+
+## Trusted Web routes, connection bounds, and mappings
+
+Every `/plugins/dsh-remote-ssh/*` route now asks the composition's `connection` service for a rejection before any handler work: the Host/Origin fence plus browser-token authentication answer 401/403, and the routes register only where `connection` exists. A deployment without that service loses the Web surface instead of exposing unauthenticated SSH-config, catalog, and filesystem writes.
+
+SSH transports add `-o BatchMode=yes` and `-o ConnectTimeout=<seconds>` from the new manager `connectTimeoutMs` (default 10000); interfaces such as `sshExecutable` still apply, and `probeServer` uses the server's configured executable. A workspace that maps the remote root `/` is rejected at validation, because on a POSIX host it would claim every POSIX-absolute path; register a subdirectory instead. Failed sidebar deletions restore both the configured and the canonical alias spelling of a mapping.
+
+## Remote editing, output, and stdin
+
+`editText` writes its replacement literally on both branches, so `$$`, `$&`, `` $` ``, and `$'` in model-supplied text survive. Remote subprocess drains are bounded by `graceMs` after the command exits: a descendant that inherits stdout cannot hold the outcome open, and an expired drain settles with the command's own status. Live stdin is split into 2048-byte base64 records so one record stays inside a PTY canonical input buffer. `canUseAhpSubprocess` was removed; `remotePath` mapping rules above apply.
 
 ## AHP protocol policy
 
@@ -18,6 +28,14 @@ Candidate and tunnel startup check the shared deadline and disposal signal befor
 
 Manager protocolVersions and connection timeouts are connection policy; changing them invalidates cached host/workspace runtimes. The runtime shutdownTimeoutMs defaults to 3000. Web maxErrorCharacters defaults to 16384 and must be a positive integer. Candidate exhaustion has the stable agent_host_unavailable error code; diagnostics preserve the first and final failure when truncated and redact connection tokens.
 
+## Workspace deletion and output
+
+Sidebar deletion removes the Remote SSH mapping before deleting its Workspace registration. Directories and Session logs are retained; Settings removal still removes only the execution mapping. Keep the manager’s `retiredAliases` field in profile configuration: these durable tombstones stop old custom aliases from executing locally. Unknown aliases under `aliasRoot` are also reserved. Do not hand-delete those identity directories or trim tombstones to make old Sessions executable. Failed, unconfirmed helper cleanup rejects deletion and keeps execution blocked; investigate its retained resource URI before retrying or restarting. Existing duplicate mapping identities are retained, while future selections reuse a same-server normalized directory.
+
+Remote subprocesses require `dd` and `mv` in addition to the existing POSIX tools. The router settings `outputChunkBytes` and `outputPollMs` default to 65536 and 40. Output uses bounded immutable chunk slots, with the retained-file/read payload and escaped-descendant limits in the [README](README.md#subprocess-output-limits). Ordinary cancellation can stop shared-connection readiness waits without disrupting other workspaces.
+
+When paired with Review-Gated alpha.3, the role-aware Node interpreter uses preserved local providers automatically; retain existing explicit local isolation entries for compatibility. Managed Review-Gated remote workspaces remain unsupported.
+
 ## Rollback
 
-Reinstall the retained previous local archive using the same pnpm store, restore the backed-up profile manifest/lockfile/patch, and restart only in a maintenance window. The update does not migrate persisted Session data or change local PTC routing.
+Reinstall the retained previous local archive using the same pnpm store, restore the backed-up profile manifest/lockfile/patch, and restart only in a maintenance window. The update does not migrate persisted Session data. The preserved-local-provider PTC selection is described above.
