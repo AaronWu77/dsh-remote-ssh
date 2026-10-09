@@ -107,6 +107,19 @@ describe('RemoteSshManager', () => {
     } finally { await ctx.fiber.dispose(); await rm(root, { recursive: true, force: true }) }
   })
 
+  it('keeps aliasRoot itself and non-alias entries in the local execution world', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-remote-ssh-manager-'))
+    const ctx = await createContext()
+    try {
+      await ctx.plugin(RemoteSshManager, { aliasRoot: root, servers: [{ id: 'devbox', label: 'Devbox', sshTarget: 'test-devbox' }], workspaces: [{ id: 'project', serverId: 'devbox', remotePath: '/srv/project' }] })
+      const manager = ctx.remoteSshManager
+      expect(manager.route(undefined, root)).toEqual({ kind: 'local' })
+      expect(manager.route(resolve(root, '.git'))).toEqual({ kind: 'local' })
+      expect(manager.route(undefined, resolve(root, '.git'))).toEqual({ kind: 'local' })
+      expect(manager.route(undefined, resolve(root, 'project', '.git'))).toMatchObject({ kind: 'remote' })
+    } finally { await ctx.fiber.dispose(); await rm(root, { recursive: true, force: true }) }
+  })
+
   it('persists remote open preferences atomically with safe defaults', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-remote-ssh-manager-'))
     const ctx = await createContext()

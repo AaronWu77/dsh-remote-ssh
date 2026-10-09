@@ -688,7 +688,14 @@ export class RemoteSshManager extends Service {
 
   private wasRemoteAlias(path: string): boolean {
     const absolute = normalizeLocal(resolve(path))
-    return isContained(normalizeLocal(resolve(this.current.aliasRoot)), absolute) || [...this.remoteAliases].some(alias => isContained(alias, absolute))
+    if ([...this.remoteAliases].some(alias => isContained(alias, absolute))) return true
+    const aliasRoot = normalizeLocal(resolve(this.current.aliasRoot))
+    if (absolute === aliasRoot || !isContained(aliasRoot, absolute)) return false
+    // Alias directories are id-named children of aliasRoot. The root itself and
+    // non-alias entries stay local, because project-root discovery walks upward
+    // through aliasRoot and probes paths such as `<aliasRoot>/.git`.
+    const first = relative(aliasRoot, absolute).split(sep)[0]
+    return first !== undefined && ID_PATTERN.test(first)
   }
 
   private async createWorkspaceContext(route: RemoteWorkspaceRoute): Promise<RemoteWorkspaceContext> {

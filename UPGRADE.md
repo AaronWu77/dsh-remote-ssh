@@ -1,4 +1,4 @@
-# Upgrade to 0.2.4-aaron.8
+# Upgrade to 0.2.4-aaron.9
 
 This fork targets DSH 0.2.0-rc.2. Install the immutable local archive, not the upstream npm package. Preserve the previous archive and profile manifest/lockfile/patch before installation; start a verification profile without the live Web listener before activating the update. Restart the live Web profile only during an agreed maintenance window, then refresh the existing GUI URL.
 
@@ -6,7 +6,7 @@ This fork targets DSH 0.2.0-rc.2. Install the immutable local archive, not the u
 
 Every `/plugins/dsh-remote-ssh/*` route now asks the composition's `connection` service for a rejection before any handler work: the Host/Origin fence plus browser-token authentication answer 401/403, and the routes register only where `connection` exists. A deployment without that service loses the Web surface instead of exposing unauthenticated SSH-config, catalog, and filesystem writes.
 
-SSH transports add `-o BatchMode=yes` and `-o ConnectTimeout=<seconds>` from the new manager `connectTimeoutMs` (default 10000); interfaces such as `sshExecutable` still apply, and `probeServer` uses the server's configured executable. A workspace that maps the remote root `/` is rejected at validation, because on a POSIX host it would claim every POSIX-absolute path; register a subdirectory instead. Failed sidebar deletions restore both the configured and the canonical alias spelling of a mapping.
+SSH transports add `-o BatchMode=yes` and `-o ConnectTimeout=<seconds>` from the new manager `connectTimeoutMs` (default 10000); interfaces such as `sshExecutable` still apply, and `probeServer` uses the server's configured executable. A workspace that maps the remote root `/` is rejected at validation, because on a POSIX host it would claim every POSIX-absolute path; register a subdirectory instead. Failed sidebar deletions restore both the configured and the canonical alias spelling of a mapping. Alias-root containment no longer claims the `aliasRoot` itself or non-alias entries below it, so project-root discovery that probes `<aliasRoot>/.git` stays in the local world; unknown id-named alias directories below `aliasRoot` remain reserved and fail closed.
 
 ## Remote editing, output, and stdin
 
