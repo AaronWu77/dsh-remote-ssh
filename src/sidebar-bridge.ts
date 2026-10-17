@@ -11,7 +11,20 @@ export interface SidebarBridgeConfig extends WorkspaceConfig {}
 export type ResolvedSidebarBridgeConfig = Required<SidebarBridgeConfig>
 
 /** Loader schema for the independently reloadable Sidebar capability bridge. */
-export const Config = z.object({
+type SidebarSchemaResult =
+  | { readonly value: unknown; readonly issues?: undefined }
+  | { readonly issues: ReadonlyArray<{ readonly message: string; readonly path?: ReadonlyArray<PropertyKey | { readonly key: PropertyKey }> | undefined }> }
+
+type SidebarBridgeSchema = {
+  (data?: Partial<SidebarBridgeConfig> | null): SidebarBridgeConfig
+  readonly '~standard': {
+    readonly version: 1
+    readonly vendor: string
+    readonly validate: (value: unknown, options?: { readonly libraryOptions?: Record<string, unknown> | undefined }) => SidebarSchemaResult | Promise<SidebarSchemaResult>
+  }
+}
+
+export const Config: SidebarBridgeSchema = z.object({
   pathMetadata: z.union(['posix', 'ahp'] as const).default('posix'),
   fullReadMaxBytes: z.number().default(64 * 1024 * 1024),
   uploadChunkMaxBytes: z.number().default(64 * 1024),
@@ -77,4 +90,12 @@ export function apply(ctx: Context, config: SidebarBridgeConfig): void {
 }
 
 /** Loader entry carries configuration defaults together with the bridge implementation. */
-export default { name, Config, apply }
+type SidebarBridgePlugin = {
+  readonly name: typeof name
+  readonly Config: typeof Config
+  readonly apply: typeof apply
+}
+
+const plugin: SidebarBridgePlugin = { name, Config, apply }
+
+export default plugin
