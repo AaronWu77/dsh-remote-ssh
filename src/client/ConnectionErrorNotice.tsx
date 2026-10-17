@@ -1,5 +1,6 @@
 /** Localized connection summary with selectable technical details. */
 import type { ReactElement } from 'react'
+import css from './ui.module.css'
 import { RemoteSshRequestError } from './api.ts'
 import type { Translate } from './types.ts'
 
@@ -11,11 +12,12 @@ import type { Translate } from './types.ts'
 export function ConnectionErrorNotice(props: { error: unknown; t: Translate }): ReactElement | null {
   if (!props.error) return null
   const details = props.error instanceof Error ? props.error.message : String(props.error)
-  const classified = props.error instanceof RemoteSshRequestError && props.error.code === 'agent_host_unavailable'
+  const code = props.error instanceof RemoteSshRequestError ? props.error.code : undefined
+  const summary = code === 'ssh_execution_failed' ? 'sshExecutionFailed' : code === 'agent_host_unavailable' ? 'agentHostUnavailable' : 'directoryFailed'
   return <div role="alert">
-    <p>{classified ? props.t('agentHostUnavailable') : props.t('directoryFailed')}</p>
+    <p className={css.error}>{props.t(summary)}</p>
     <details><summary>{props.t('connectionDetails')}</summary>
-      <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: '30vh', overflow: 'auto', fontSize: 'inherit' }}>{details}</pre>
+      <pre className={css.details}>{details}</pre>
     </details>
   </div>
 }

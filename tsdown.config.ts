@@ -18,6 +18,9 @@ export default [
       spill: "src/spill.ts",
       "local-bridge": "src/local-bridge.ts",
       "shell-transparent": "src/shell-transparent.ts",
+      "sidebar-git": "src/sidebar-git.ts",
+      "sidebar-workspace": "src/sidebar-workspace.ts",
+      "sidebar-bridge": "src/sidebar-bridge.ts",
       "agent-policy": "src/agent-policy.ts",
       tui: "src/tui.ts",
       web: "src/web.ts",
@@ -31,6 +34,7 @@ export default [
     clean: true,
     deps: {
       neverBundle: [
+        "dsh-better-sidebar",
         "@microsoft/agent-host-protocol",
         "@deepseek-ai/cordis",
         "@deepseek-ai/dsh-agent",
@@ -55,6 +59,7 @@ export default [
     outDir: "lib",
     format: "cjs",
     platform: "browser",
+    css: { inject: false },
     dts: false,
     clean: false,
     deps: {
@@ -64,6 +69,10 @@ export default [
         "react-dom",
         "react-dom/client",
         "@deepseek-ai/cordis",
+        "@deepseek-ai/dsh-client-store",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-primitives",
+        "@deepseek-ai/dsh-client-ui-dockkit",
         "@deepseek-ai/dsh-client-runtime/client",
         "@deepseek-ai/dsh-client-ui-settings-plugins/client",
       ],

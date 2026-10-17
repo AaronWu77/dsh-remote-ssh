@@ -1,7 +1,18 @@
 import type { Workspace } from './api.ts'
 import { isAbsoluteWorkspacePath } from '@deepseek-ai/dsh-util-workspace-path'
 
-/** Select only from the path's alias or the current Session's remote world. */
+/** Whether the spelling selects a Windows drive or network share. */
+function isWindowsAbsolutePath(path: string): boolean {
+  return /^[a-z]:[\\/]/i.test(path) || path.startsWith('//') || path.startsWith('\\\\')
+}
+
+/** Recognize a collapsed WSL root only when authoritative paths identify a Windows host. */
+function isWindowsWslTarget(path: string, cwd: string, workspaces: readonly Workspace[]): boolean {
+  const windowsHost = isWindowsAbsolutePath(cwd) || workspaces.some(workspace => isWindowsAbsolutePath(workspace.aliasPath))
+  return windowsHost && /^\/(?:wsl\.localhost|wsl\$)\/[^/]+(?:\/|$)/i.test(path.replace(/\\/g, '/'))
+}
+
+/** Select only from a registered alias or a POSIX path in the current remote world. */
 export function resolveRemoteOpenWorkspace(
   workspaces: readonly Workspace[],
   path: string,
@@ -10,6 +21,7 @@ export function resolveRemoteOpenWorkspace(
   const aliasMatch = bestMatch(workspaces, path, workspace => workspace.aliasPath, localContains)
   if (aliasMatch !== undefined) return aliasMatch
   if (cwd === undefined) return undefined
+  if (isWindowsAbsolutePath(path) || isWindowsWslTarget(path, cwd, workspaces)) return undefined
   const current = bestMatch(workspaces, cwd, workspace => workspace.aliasPath, localContains)
     ?? bestMatch(workspaces, cwd, workspace => workspace.remotePath, posixContains)
   if (current === undefined) return undefined

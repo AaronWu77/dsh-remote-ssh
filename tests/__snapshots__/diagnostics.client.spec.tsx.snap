@@ -1,0 +1,5 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`diagnostic lifecycle and report presentation > keeps cleanup failure independent and marks reports from old settings > cancelled chinese report 1`] = `"诊断已取消配置检查成功1 毫秒配置校验通过SSH 执行成功2 毫秒资源清理成功3 毫秒"`;
+
+exports[`diagnostic lifecycle and report presentation > keeps cleanup failure independent and marks reports from old settings > cleanup failed report 1`] = `"Cleanup has not been confirmed. This report is not an all-clear.This report uses an older configuration. Run another check to verify current settings.ConfigurationSucceeded1 msConfiguration validatedSSH executionSucceeded2 msResource cleanupFailed3 ms"`;

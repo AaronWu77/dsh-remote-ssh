@@ -8,7 +8,7 @@ Install `dsh-remote-ssh` into the requested DeepSeek Harness profile, preserve u
 
 ## Defaults
 
-- **Package:** this fork targets DSH 0.2.0-rc.2. Build its editable checkout and install the resulting local `.tgz`; the npm registry package remains the upstream release. Do not substitute it for the fork.
+- **Package:** this checkout declares DSH 0.2.1-alpha.2 peer dependencies in `package.json`. Build its editable checkout and install the resulting local `.tgz`; the npm registry package remains the upstream release. Do not substitute it for the fork.
 - **Profile:** use the user-named profile; otherwise use `web`.
 - **Launcher:** prefer an installed `dsh`. From a DeepSeek Harness source checkout, run commands in that checkout and replace `dsh` with `pnpm dsh`.
 - **SSH configuration:** use the platform's default user and system OpenSSH files unless the user supplies a custom absolute path.
@@ -24,7 +24,7 @@ The bundle uses standard dsh plugin APIs. Do not patch, fork, build, or commit c
 - Do not accept a new host key on the user's behalf. Ask the user to verify it with ordinary OpenSSH.
 - Preserve every unrelated profile dependency and `cordis.patch.yml` row.
 - Never delete remote files, workspace aliases, Workspace records, or Session history during install, update, or removal.
-- Warn that this bundle selects `danger-full-access` and approval policy `never`; the SSH account, container, or VM is the remote security boundary.
+- Preserve the deployment sandbox and approval policies. Local commands use official sandbox executors; remote commands require explicit `danger-full-access` because managed remote confinement is unsupported. The SSH account, container, or VM remains the remote security boundary.
 
 ## Procedure
 
@@ -49,13 +49,13 @@ Stop and report the exact launcher failure if it does not run.
 For the default Web profile:
 
 ```sh
-dsh plugin --profile web add file:/absolute/path/to/dsh-remote-ssh-0.2.4-aaron.4.tgz --ignore-scripts
+dsh plugin --profile web add file:/absolute/path/to/dsh-remote-ssh-0.2.4-aaron.12-sidebar.6.tgz --ignore-scripts
 ```
 
 From a Harness source checkout:
 
 ```sh
-pnpm dsh plugin --profile web add file:/absolute/path/to/dsh-remote-ssh-0.2.4-aaron.4.tgz --ignore-scripts
+pnpm dsh plugin --profile web add file:/absolute/path/to/dsh-remote-ssh-0.2.4-aaron.12-sidebar.6.tgz --ignore-scripts
 ```
 
 If the user explicitly supplied a local checkout, require all of these files before installation:
@@ -85,8 +85,8 @@ Require these facts:
 
 - `remote-ssh-manager`, `remote-ssh-web`, `remote-ssh-fs-router`, `remote-ssh-subprocess-router`, and `remote-ssh-agent-policy` load from `dsh-remote-ssh`;
 - the stock root `subprocess`, `fs-sandbox`, `bash-sandbox`, `pwsh-sandbox`, `tool-bash`, `tool-pwsh`, and native `directory-picker` rows are disabled by the bundle;
-- `tool-fs-search` remains enabled;
-- `sandbox-policy.config.mode` is `danger-full-access` and `approval.config.policy` is `never`.
+- the root `tool-fs-search` row is disabled; `remote-ssh-search` is enabled and `agent-preset-registry` depends on `remoteSshSearchHook`, so preset-scoped search loads through the remote-aware parser without introducing separate remote tool names;
+- Existing `sandbox-policy.config.mode` and `approval.config.policy` are preserved; no permissive override is inserted.
 
 Stop and report the exact diagnostic if composition fails. Do not edit unrelated rows to make the bundle load.
 
@@ -155,13 +155,15 @@ Then:
 
 1. open **Settings → Remote SSH**;
 2. confirm that the expected Host alias appears;
-3. use **Test** and require a successful SSH result;
-4. use **Browse remote…** to select the user-requested absolute POSIX workspace path;
-5. add the workspace and require it to appear as `<Server> > <folder>`.
+3. use **Test** to verify basic SSH command execution; this does not verify Agent Host startup, protocol negotiation, directory access, or terminal execution;
+4. use **Add workspace**, select the SSH host, and require its directory listing to load before confirming the user-requested absolute POSIX workspace path;
+5. require the confirmed workspace to appear as `<Server> > <folder>`.
 
-For a custom config, set its absolute path under **Settings → Plugins → Remote SSH**. Do not copy its contents into dsh settings.
+Use **Settings → Remote SSH → Advanced settings** for the custom SSH configuration path and editor preferences. Restore defaults changes only the draft until saved. Verify the saved revision by reloading preferences. Finish active remote tasks before changing SSH configuration and explicitly confirm release of existing connections; never copy private keys or SSH config contents into dsh settings.
 
-Under the same plugin settings, leave **Open remote files with** on auto-detect, choose a specific supported editor, or select the download-only fallback. Native opening requires that editor's compatible Remote SSH extension.
+`remote-ssh-manager.openFileMode` selects auto-detection, a supported editor, a custom executable via `openFileEditorPath`, or download-only fallback. These options govern external opening and do not replace Better Sidebar in-app preview. Native opening requires a compatible Remote SSH extension in that editor.
+
+Use **Connection diagnostics** for staged SSH/AHP checks. Deep mode requires explicit confirmation for temporary remote resources; terminal verification is a separate option. Require successful cleanup as well as connection stages. A successful basic SSH test alone does not validate the workspace or Sidebar.
 
 ### 8. Verify transparent execution
 
@@ -169,7 +171,7 @@ Create or open a disposable session in the new remote workspace. Verify with ord
 
 - a file read returns a file known to exist on the remote host;
 - `bash` runs `pwd` and `hostname` on the selected host;
-- a second `bash` call preserves a `cd` or exported test variable from the first call;
+- each `bash` call starts an independent terminal channel on the shared host connection; a second call does not inherit `cd` or exported variables from the first, so supply its working directory and environment explicitly;
 - glob or grep uses remote `rg`;
 - the tool card shows `<Server> > <workspace>`, not an internal UUID;
 - no `pwsh` tool is exposed for a POSIX/Linux remote workspace;

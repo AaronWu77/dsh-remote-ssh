@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { posix } from 'node:path'
 import type { ContentEncoding, TerminalClientClaim } from '@microsoft/agent-host-protocol'
 import { ActionType } from '@microsoft/agent-host-protocol'
-import type { AhpClient, Subscription } from '@microsoft/agent-host-protocol/client'
+import type { Subscription } from '@microsoft/agent-host-protocol/client'
 import { Context } from '@deepseek-ai/cordis'
 import { ShellExecutor } from '@deepseek-ai/dsh-shell'
 import type {
@@ -10,7 +10,6 @@ import type {
   ShellExecRequest,
   ShellExecSpec,
   ShellExecution,
-  ShellProcess,
   ShellProcessRead,
   ShellRunResult,
 } from '@deepseek-ai/dsh-shell'
@@ -221,6 +220,7 @@ async function executeTerminal(
   const stdinUri = fileUriFromPosixPath(stdinPath)
   const workdir = mapper.toRemotePath(spec.workdir)
   let subscription: Subscription | undefined
+  let subscriptionAttempted = false
   let terminalAttempted = false
   let terminalExited = false
   let stdinCreated = false
@@ -262,6 +262,7 @@ async function executeTerminal(
       rows: 30,
     })
     if (cancelled()) return cancelledResult()
+    subscriptionAttempted = true
     const subscribed = await client.subscribe(terminalUri)
     subscription = subscribed.subscription
 
@@ -350,11 +351,16 @@ async function executeTerminal(
       client.resourceDelete({ uri: commandUri }),
       ...(stdinCreated ? [client.resourceDelete({ uri: stdinUri })] : []),
       ...(subscription === undefined ? [] : [subscription.close()]),
+      ...(subscriptionAttempted ? [client.unsubscribe(terminalUri)] : []),
     ]
     if (terminalAttempted) cleanup.push(client.request('disposeTerminal', { channel: terminalUri }).catch(error => {
       if (!terminalExited) cleanupFailure = new Error('dsh-remote-ssh: terminal shutdown unobservable at ' + terminalUri, { cause: error })
     }))
-    await Promise.allSettled(cleanup)
+    const results = await Promise.allSettled(cleanup)
+    const failed = results.find(result => result.status === 'rejected')
+    if (cleanupFailure === undefined && failed?.status === 'rejected') {
+      cleanupFailure = new Error('dsh-remote-ssh: shell resource/subscription cleanup unobservable at ' + terminalUri, { cause: failed.reason })
+    }
     if (cleanupFailure !== undefined) { onCleanupFailure(cleanupFailure); throw cleanupFailure }
   }
 }

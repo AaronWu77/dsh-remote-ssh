@@ -5,6 +5,6 @@
     "lib": ["ESNext", "DOM", "DOM.Iterable"],
     "types": ["react"]
   },
-  "include": ["src/client", "tests/client-entry.spec.ts", "tests/client-open-path.spec.ts", "tests/connection-error.spec.ts", "tests/client-operations.spec.tsx"],
+  "include": ["src/client", "tests/*.client.spec.tsx", "tests/client-entry.spec.ts", "tests/client-open-path.spec.ts", "tests/connection-error.spec.ts", "tests/client-operations.spec.tsx"],
   "exclude": []
 }

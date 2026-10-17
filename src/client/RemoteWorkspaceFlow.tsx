@@ -1,105 +1,96 @@
+/** One modal owns LOCAL/SSH source selection and inline directory confirmation. */
 import { useEffect, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
+import { Button, Menu, Modal, IconChevronDownOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { DirectoryFlowOwnerProps } from '@deepseek-ai/dsh-client-ui-workspace/client'
-import {
-  emptyCatalog, fetchCatalogState, fetchDirectoryListing, LOCAL_WORKSPACE_PATH, request, WORKSPACE_PATH,
-} from './api.ts'
+import { emptyCatalog, fetchCatalogState, fetchDirectoryListing, LOCAL_WORKSPACE_PATH, request, WORKSPACE_PATH } from './api.ts'
 import type { CatalogState, RemoteDirectoryListing } from './api.ts'
-import { button, card, input, primary, row } from './styles.ts'
 import type { Translate } from './types.ts'
 import { FailureNotice } from './FailureNotice.tsx'
-import { useDialogFocus } from './use-dialog.ts'
 import { WorkspaceDirectoryPicker } from './WorkspaceDirectoryPicker.tsx'
+import css from './ui.module.css'
 
 export interface RemoteWorkspaceFlowInjected {
   t: Translate
   listLocal: (path?: string, signal?: AbortSignal) => Promise<RemoteDirectoryListing>
 }
 
-/** Combined LOCAL and Remote SSH workspace creation flow. */
+/**
+ * Report one confirmed path to the owner; browsing and cancellation create nothing.
+ * @param props - Owner lifecycle and localized directory access.
+ * @returns A shared modal while open, otherwise null.
+ */
 export function RemoteWorkspaceFlow(props: DirectoryFlowOwnerProps & RemoteWorkspaceFlowInjected): ReactElement | null {
-  const [state, setState] = useState<CatalogState>(emptyCatalog)
-  const [serverId, setServerId] = useState('')
-  const [remotePath, setRemotePath] = useState('')
-  const [showDirectoryPicker, setShowDirectoryPicker] = useState(false)
-  const [showLocalPicker, setShowLocalPicker] = useState(false)
+  return props.open ? <OpenWorkspaceFlow {...props} /> : null
+}
+
+function OpenWorkspaceFlow(props: DirectoryFlowOwnerProps & RemoteWorkspaceFlowInjected): ReactElement | null {
+  const [catalog, setCatalog] = useState<CatalogState>(emptyCatalog)
+  const [source, setSource] = useState('local')
+  const [menuOpen, setMenuOpen] = useState(false)
   const [error, setError] = useState<unknown>('')
-  const [adding, setAdding] = useState(false)
+  const [working, setWorking] = useState(false)
+  const [cancelled, setCancelled] = useState(false)
   const pending = useRef(false)
-  const lifetime = useRef<AbortController | undefined>(undefined)
-  const onError = useRef(props.onError)
-  onError.current = props.onError
-  const busy = props.busy || adding
-  const dialog = useDialogFocus(props.open, () => { if (!busy) props.onCancel() })
-
-  useEffect(() => {
-    if (!props.open) {
-      setShowDirectoryPicker(false)
-      setShowLocalPicker(false)
-      return
-    }
+  const owner = useRef(props)
+  owner.current = props
+  const lifetime = useRef(new AbortController())
+  const catalogGeneration = useRef(0)
+  const catalogController = useRef<AbortController>()
+  const busy = props.busy || working
+  const refreshCatalog = async (): Promise<void> => {
+    const generation = ++catalogGeneration.current
+    catalogController.current?.abort()
     const controller = new AbortController()
-    lifetime.current = controller
+    catalogController.current = controller
     setError('')
-    void fetchCatalogState(controller.signal).then(next => {
-      if (controller.signal.aborted) return
-      setState(next)
-      setServerId(next.servers[0]?.id ?? '')
-    }, reason => { if (!controller.signal.aborted) onError.current(String(reason)) })
-    return () => { controller.abort() }
-  }, [props.open])
-  if (!props.open) return null
-
-  const pick = async (load: (signal: AbortSignal | undefined) => Promise<string>): Promise<void> => {
-    if (pending.current || props.busy) return
-    pending.current = true
-    setAdding(true)
-    setError('')
-    const signal = lifetime.current?.signal
-    try { const path = await load(signal); if (!signal?.aborted) props.onPicked(path) }
-    catch (reason) { if (!signal?.aborted) setError(reason) }
-    finally { pending.current = false; setAdding(false) }
+    try {
+      const next = await fetchCatalogState(controller.signal)
+      if (!controller.signal.aborted && generation === catalogGeneration.current) setCatalog(next)
+    } catch (reason) {
+      if (!controller.signal.aborted && generation === catalogGeneration.current) setError(reason)
+    }
   }
-  const chooseLocal = (path: string) => pick(signal => request<{ path: string }>(LOCAL_WORKSPACE_PATH, 'POST', { path }, signal).then(result => result.path))
-  const chooseRemote = () => pick(signal => request<{ aliasPath: string }>(WORKSPACE_PATH, 'POST', { serverId, remotePath }, signal).then(result => result.aliasPath))
+  useEffect(() => {
+    lifetime.current = new AbortController()
+    void refreshCatalog()
+    return () => { lifetime.current.abort(); catalogController.current?.abort() }
+  }, [])
 
-  return <div ref={dialog} tabIndex={-1} style={{ position: 'fixed', inset: 0, zIndex: 1000, display: 'grid', placeItems: 'center', background: 'rgba(0,0,0,.35)', outline: 'none' }} role="dialog" aria-modal="true" aria-label={props.t('addWorkspaceTitle')}>
-    <div style={{ ...card, width: 'min(520px, calc(100vw - 32px))' }}>
-      <strong>{props.t('addWorkspaceTitle')}</strong>
-      <button style={button} disabled={busy} onClick={() => { setShowLocalPicker(true) }}>{props.t('chooseLocalFolder')}</button>
-      <WorkspaceDirectoryPicker
-        t={props.t}
-        open={showLocalPicker}
-        title={props.t('selectLocalFolder')}
-        sourceKey="local"
-        initialPath=""
-        list={props.listLocal}
-        onCancel={() => { setShowLocalPicker(false) }}
-        onPick={path => { setShowLocalPicker(false); void chooseLocal(path) }}
-      />
-      <div style={row}>
-        <select style={input} disabled={busy} value={serverId} onChange={event => { setServerId(event.target.value); setRemotePath(''); setShowDirectoryPicker(false) }}>
-          <option value="">{props.t('selectRemoteSsh')}</option>
-          {state.servers.map(server => <option key={server.id} value={server.id}>{server.label}</option>)}
-        </select>
-        <input style={input} disabled={busy} placeholder={props.t('remotePathPlaceholder')} value={remotePath} onChange={event => { setRemotePath(event.target.value) }} />
-        <button style={button} disabled={!serverId || busy} onClick={() => { setShowDirectoryPicker(true) }}>{props.t('browseRemote')}</button>
-      </div>
-      <WorkspaceDirectoryPicker
-        t={props.t}
-        open={showDirectoryPicker}
-        title={props.t('selectRemoteFolder')}
-        sourceKey={`remote:${serverId}`}
-        initialPath={remotePath}
-        list={(path, signal) => fetchDirectoryListing({ serverId, ...(path === undefined ? {} : { path }) }, signal)}
-        onCancel={() => { setShowDirectoryPicker(false) }}
-        onPick={path => { setRemotePath(path); setShowDirectoryPicker(false) }}
-      />
+  const cancel = (): void => {
+    if (busy || pending.current) return
+    lifetime.current.abort()
+    catalogController.current?.abort()
+    setCancelled(true)
+    props.onCancel()
+  }
+  const confirm = async (path: string): Promise<void> => {
+    if (pending.current || lifetime.current.signal.aborted) return
+    if (owner.current.busy) throw new Error(props.t('workspaceConflict'))
+    pending.current = true
+    try {
+      const signal = lifetime.current.signal
+      const result = source === 'local'
+        ? await request<{ path: string }>(LOCAL_WORKSPACE_PATH, 'POST', { path }, signal).then(value => value.path)
+        : await request<{ aliasPath: string }>(WORKSPACE_PATH, 'POST', { serverId: source.slice(7), remotePath: path }, signal).then(value => value.aliasPath)
+      if (!signal.aborted) owner.current.onPicked(result)
+    } catch (reason) { pending.current = false; throw reason }
+  }
+  if (cancelled) return null
+  const title = source === 'local' ? props.t('selectLocalFolder') : props.t('selectRemoteFolder')
+  const label = source === 'local' ? props.t('localSource') : catalog.servers.find(server => 'remote:' + server.id === source)?.label
+  return <Modal open onClose={cancel} title={props.t('addWorkspaceTitle')} closeLabel={props.t('close')} className={css.modal}>
+    <div className={css.stack}>
+      <Menu open={menuOpen} portal autoFocus selectedId={source} onClose={() => { setMenuOpen(false) }}
+        anchor={<Button data-modal-autofocus aria-label={props.t('server')} aria-haspopup="menu" aria-expanded={menuOpen}
+          disabled={busy} icon={<IconChevronDownOutlineRegular size={14} />} onClick={() => { setMenuOpen(value => !value) }}>{label}</Button>}
+        items={[{ id: 'local', label: props.t('localSource') }, ...catalog.servers.map(server => ({ id: 'remote:' + server.id, label: server.label }))]}
+        onSelect={id => { if (!busy) { setSource(id); setMenuOpen(false); setError('') } }} />
       <FailureNotice error={error} t={props.t} />
-      <div style={{ ...row, justifyContent: 'flex-end' }}>
-        <button style={button} disabled={busy} onClick={props.onCancel}>{props.t('cancel')}</button>
-        <button style={primary} disabled={busy || !serverId || !remotePath.trim()} onClick={() => { void chooseRemote() }}>{props.t('addWorkspace')}</button>
-      </div>
+      {error ? <Button size="sm" disabled={busy} onClick={() => { void refreshCatalog() }}>{props.t('retry')}</Button> : null}
+      <WorkspaceDirectoryPicker key={source} t={props.t} title={title} busy={busy}
+        list={source === 'local' ? props.listLocal : (path, signal) => fetchDirectoryListing({ serverId: source.slice(7), ...(path === undefined ? {} : { path }) }, signal)}
+        onWorking={setWorking} onCancel={cancel} onPick={confirm} />
     </div>
-  </div>
+  </Modal>
 }

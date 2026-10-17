@@ -63,13 +63,14 @@ export const emptyCatalog: CatalogState = {
 
 /** A classified same-origin failure with bounded technical diagnostics. */
 export class RemoteSshRequestError extends Error {
-  constructor(message: string, readonly code: string | undefined) { super(message); this.name = 'RemoteSshRequestError' }
+  constructor(message: string, readonly code: string | undefined, readonly status?: number) { super(message); this.name = 'RemoteSshRequestError' }
 }
 
-export async function request<T = unknown>(path: string, method = 'GET', body?: unknown, signal?: AbortSignal): Promise<T> {
+export async function request<T = unknown>(path: string, method = 'GET', body?: unknown, signal?: AbortSignal, options?: { keepalive?: boolean }): Promise<T> {
   const response = await fetch(path, {
     method,
     credentials: 'same-origin',
+    ...(options?.keepalive === undefined ? {} : { keepalive: options.keepalive }),
     ...(signal === undefined ? {} : { signal }),
     headers: {
       accept: 'application/json',
@@ -83,7 +84,7 @@ export async function request<T = unknown>(path: string, method = 'GET', body?: 
       ? String(value.error)
       : `HTTP ${response.status}`
     const code = typeof value === 'object' && value !== null && 'code' in value && typeof value.code === 'string' ? value.code : undefined
-    throw new RemoteSshRequestError(message, code)
+    throw new RemoteSshRequestError(message, code, response.status)
   }
   return value as T
 }

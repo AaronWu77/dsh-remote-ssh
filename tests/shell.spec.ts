@@ -1,4 +1,3 @@
-import { ActionType } from '@microsoft/agent-host-protocol'
 import RemoteRuntime, { type AhpConnection } from '../src/index.ts'
 import type { RemoteShellExecution } from '../src/shell.ts'
 import { setup } from './fixtures/terminal-client.ts'
@@ -99,6 +98,19 @@ describe('RemoteSshShellExecutor', () => {
     expect(result.stderr).toEqual({ text: '', truncated: false })
     expect(client.writes).toHaveLength(1)
     expect(client.disposed).toBe(true)
+    expect(client.unsubscribed).toBe(true)
+  })
+
+  it('rejects quiescence when server subscription removal is unobservable after successful command exit', async () => {
+    const { ctx, client } = await setup()
+    try {
+      client.unsubscribeError = new Error('unsubscribe delivery failed')
+      const execution = await ctx.shell.execute(ctx.shell.resolve({ command: 'completed' })) as RemoteShellExecution
+      await expect(execution.result()).rejects.toThrow('subscription cleanup unobservable')
+      await expect(execution.quiescent).rejects.toThrow('subscription cleanup unobservable')
+      expect(client.disposed).toBe(true)
+      expect(client.unsubscribed).toBe(false)
+    } finally { await ctx.fiber.dispose() }
   })
 
   it('rejects restrictive modes rather than pretending a remote shell is confined', async () => {

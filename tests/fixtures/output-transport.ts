@@ -33,9 +33,10 @@ class LocalSubscription implements AsyncIterableIterator<SubscriptionEvent> {
   private readonly queue: SubscriptionEvent[] = []
   private wake: (() => void) | undefined
   private closed = false
+  private serverSeq = 0
   push(action: object): void {
     if (this.closed) return
-    this.queue.push({ type: 'action', params: { channel: 'ahp-terminal:/fixture', serverSeq: 1, action } } as SubscriptionEvent)
+    this.queue.push({ type: 'action', params: { channel: 'ahp-terminal:/fixture', serverSeq: ++this.serverSeq, action } } as SubscriptionEvent)
     this.wake?.(); this.wake = undefined
   }
   async next(): Promise<IteratorResult<SubscriptionEvent>> {
@@ -43,7 +44,8 @@ class LocalSubscription implements AsyncIterableIterator<SubscriptionEvent> {
     if (this.closed) return { done: true, value: undefined }
     return { done: false, value: this.queue.shift()! }
   }
-  async close(): Promise<void> { this.closed = true; this.wake?.(); this.wake = undefined }
+  end(): void { this.closed = true; this.wake?.(); this.wake = undefined }
+  async close(): Promise<void> { this.end() }
   [Symbol.asyncIterator](): this { return this }
 }
 
@@ -68,6 +70,8 @@ export class LocalOutputFixture {
   readonly requests: { method: string; channel: string }[] = []
   readonly inputDispatches: { channel: string; data: string }[] = []
   readonly disposedTerminals = new Set<string>()
+  readonly subscribedTerminals = new Set<string>()
+  readonly unsubscribedTerminals = new Set<string>()
   beforeRequest: ((method: string, channel: string) => Promise<void>) | undefined
   beforeSubscribe: ((channel: string) => Promise<void>) | undefined
   readonly listings: { name: string; size: number }[][] = []
@@ -183,6 +187,9 @@ export class LocalOutputFixture {
       stopping ??= (async () => {
         if (exited) return
         stopped = true
+        // This fixture owns a pipe, not a PTY. Close input so an MSYS exec
+        // replacement cannot retain cat after TERM targets the wrapper PID.
+        child.stdin!.end()
         const pid = await ready
         if (exited) return
         const killer = spawn(outputTestBash!, ['-c', 'kill -TERM ' + pid], { cwd: this.root, stdio: 'ignore' })
@@ -205,7 +212,13 @@ export class LocalOutputFixture {
   }
   async subscribe(channel: string) {
     await this.beforeSubscribe?.(channel)
+    this.subscribedTerminals.add(channel)
     return { result: {}, subscription: this.terminals.get(channel)!.subscription }
+  }
+  async unsubscribe(channel: string): Promise<void> {
+    this.terminals.get(channel)?.subscription.end()
+    this.subscribedTerminals.delete(channel)
+    this.unsubscribedTerminals.add(channel)
   }
   dispatch(channel: string, action: { type: string; data?: string }) {
     if (action.type === ActionType.TerminalInput) {

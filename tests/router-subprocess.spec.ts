@@ -7,6 +7,7 @@ import type { SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
 import { RemoteSshRuntime, WorkspacePathMapper, fileUriFromPosixPath } from '../src/index.ts'
 import TransparentSubprocessRuntime, {
   DeferredAhpStdin,
+  spawnOwnedRemoteProcess,
   buildRemoteProcessCommand,
   buildRemoteInteractiveCommand,
   buildRemoteStdinWriterCommand,
@@ -57,7 +58,7 @@ async function setup(config: Config = { outputChunkBytes: 1024, outputPollMs: 1 
   const release = vi.fn()
   const manager = {
     ownExecution: vi.fn((_route: unknown, _execution: { terminate(): void | Promise<void>; done: Promise<unknown> }) => release),
-    route: () => route,
+    routeShell: vi.fn(() => route),
     workspaceContext: vi.fn(async () => ({ remote })),
     workspaceShell: vi.fn(async () => shell),
     sshTransport: () => { sshFallbacks += 1; throw new Error('SSH fallback is forbidden') },
@@ -101,6 +102,27 @@ function unresolvedReadiness(client: LocalOutputFixture) {
   cleanups.push(async () => { resolve(); await promise })
   return { runtime, resolve }
 }
+
+describe('session-bound subprocess dispatch', () => {
+  it('passes the session world to collected and terminal routing before allocation', async () => {
+    const ctx = new Context()
+    cleanups.push(() => ctx.fiber.dispose())
+    const localSpawn = vi.fn(() => { throw new Error('local fallback forbidden') })
+    const localTerminal = vi.fn(async () => { throw new Error('local fallback forbidden') })
+    const routeShell = vi.fn(() => { throw new Error('no execution world is bound') })
+    const allocation = vi.fn()
+    ctx.provide('localSubprocess', { spawn: localSpawn, spawnTerminal: localTerminal } as never)
+    ctx.provide('remoteSshManager', { routeShell, workspaceContext: allocation } as never)
+    await ctx.plugin(TransparentSubprocessRuntime, {})
+    const spec = { ...collectedSpec(), cwd: '/same-name', env: { DSH_SESSION_ID: 'removed-session' } }
+    expect(() => ctx.subprocess.spawn(spec)).toThrow('no execution world is bound')
+    await expect(ctx.subprocess.spawnTerminal({ argv: ['bash'], cwd: spec.cwd, env: spec.env, rows: 24, cols: 80, graceMs: 100, terminalType: 'xterm' })).rejects.toThrow('no execution world is bound')
+    expect(routeShell.mock.calls).toEqual([[spec.cwd, 'removed-session'], [spec.cwd, 'removed-session']])
+    expect(localSpawn).not.toHaveBeenCalled()
+    expect(localTerminal).not.toHaveBeenCalled()
+    expect(allocation).not.toHaveBeenCalled()
+  })
+})
 
 describe('remote argv', () => {
   it.each([
@@ -146,6 +168,17 @@ describe('remote argv', () => {
 
 // Windows uses isolated Git Bash FIFOs; hosts without a POSIX test shell skip explicitly.
 describe.skipIf(outputTestBash === undefined)('AHP bounded subprocess output', () => {
+  it('joins an input reader that ignores TERM when the fixture closes its owned stdin', async () => {
+    const client = await LocalOutputFixture.create()
+    cleanups.push(() => client.dispose())
+    const execution = client.launch('trap "" TERM; printf input-ready; cat')
+    const ready = deferred()
+    execution.output.once('data', () => ready.resolve())
+    await ready.promise
+    await execution.stop()
+    await execution.done
+    expect(client.processes.size).toBe(0)
+  })
   it.each([
     [{ outputChunkBytes: 0 }, 'outputChunkBytes'],
     [{ outputChunkBytes: -1 }, 'outputChunkBytes'],
@@ -191,6 +224,22 @@ describe.skipIf(outputTestBash === undefined)('AHP bounded subprocess output', (
     const handle = ctx.subprocess.spawn(spec)
     await expect(handle.done).resolves.toEqual({ exitCode: 5, signal: null })
     expect(handle.collected.stdout?.readFrom(0).text).toBe('before-descendant\n')
+    expect(await readdir(client.root)).toEqual([])
+  })
+
+  it.each([false, true])('reports byte EOF separately from command exit for complete and bounded output (%s)', async bounded => {
+    const { ctx, client } = await setup({ outputChunkBytes: 1024, outputPollMs: 5 })
+    const spec = collectedSpec()
+    spec.graceMs = bounded ? 150 : 30_000
+    spec.argv = ['bash', '-c', bounded ? "printf 'partial\\0'; (sleep 1 &); exit 0" : "printf 'complete\\0'; exit 0"]
+    const manager = ctx.remoteSshManager
+    const route = manager.routeShell(spec.cwd)
+    if (route.kind !== 'remote') throw new Error('fixture requires remote route')
+    const handle = spawnOwnedRemoteProcess(manager, route, spec, { outputChunkBytes: 1024, outputPollMs: 5 })
+    await expect(handle.done).resolves.toEqual({ exitCode: 0, signal: null })
+    await expect(handle.outputComplete).resolves.toBe(!bounded)
+    await handle.quiescent
+    expect(handle.collected.stdout?.readFrom(0).text).toBe(bounded ? 'partial\0' : 'complete\0')
     expect(await readdir(client.root)).toEqual([])
   })
 
@@ -295,6 +344,32 @@ describe.skipIf(outputTestBash === undefined)('AHP bounded subprocess output', (
     expect(client.processes.size).toBe(0)
     expect(await readdir(client.root)).toEqual([])
     assertBounds(client, 1024)
+  })
+
+  it('cancels a scheduled process synchronously when ownership refuses without terminating it', async () => {
+    const { ctx, client, manager } = await setup()
+    manager.ownExecution.mockImplementation(() => { throw new Error('retired owner refuses') })
+    expect(() => ctx.subprocess.spawn(collectedSpec('pipe'))).toThrow('retired owner refuses')
+    await manager.ownExecution.mock.calls[0]![1].done
+    expect(manager.workspaceContext).not.toHaveBeenCalled()
+    expect(manager.workspaceShell).not.toHaveBeenCalled()
+    expect(client.commands).toEqual([])
+    expect(client.requests).toEqual([])
+    expect(client.processes.size).toBe(0)
+    expect(await readdir(client.root)).toEqual([])
+  })
+
+  it('aborts scheduled terminal allocation synchronously when ownership refuses without terminating it', async () => {
+    const { ctx, client, alias, manager } = await setup()
+    manager.ownExecution.mockImplementation(() => { throw new Error('retired owner refuses') })
+    await expect(ctx.subprocess.spawnTerminal({ argv: ['bash', '-c', 'printf refused-allocation; exit 0'], cwd: alias, rows: 24, cols: 80, graceMs: 100, terminalType: 'xterm' })).rejects.toThrow('retired owner refuses')
+    await manager.ownExecution.mock.calls[0]![1].done
+    expect(manager.workspaceContext).not.toHaveBeenCalled()
+    expect(manager.workspaceShell).not.toHaveBeenCalled()
+    expect(client.requests).toEqual([])
+    expect(client.inputDispatches).toEqual([])
+    expect(client.processes.size).toBe(0)
+    expect(await readdir(client.root)).toEqual([])
   })
 
   it('cancels before shell allocation or resource creation', async () => {

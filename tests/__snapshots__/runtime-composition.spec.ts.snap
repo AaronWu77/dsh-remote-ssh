@@ -1,0 +1,11 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`native shell routing through real YAML composition > preserves restricted defaults and updates native budgets without remounting 1`] = `
+{
+  "sandbox": {
+    "denied": false,
+    "mode": "danger-full-access",
+  },
+  "text": "composition-local",
+}
+`;

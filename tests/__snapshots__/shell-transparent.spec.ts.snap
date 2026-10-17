@@ -3,8 +3,8 @@
 exports[`transparent shell failure observations > retains the same UTF-8 note for consuming and independent background readers 1`] = `
 {
   "consuming": "[stderr]
-spawn failed: Error: 无法启动 executable",
-  "nextByte": 44,
-  "observedStderr": "spawn failed: Error: 无法启动 executable",
+subprocess failed before reporting an outcome: Error: 无法启动 executable",
+  "nextByte": 77,
+  "observedStderr": "subprocess failed before reporting an outcome: Error: 无法启动 executable",
 }
 `;

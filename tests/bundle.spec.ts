@@ -47,6 +47,9 @@ describe('bundle overlay', () => {
     const byId = new Map(rows.map(row => [row.id, row]))
 
     expect(warnings).toEqual([])
+    expect(byId.get('sandbox-policy')?.config).toEqual(BASE_ROWS.find(row => row.id === 'sandbox-policy')?.config)
+    expect(byId.get('approval')?.config).toEqual(BASE_ROWS.find(row => row.id === 'approval')?.config)
+    expect(patches.some(row => row.id === 'sandbox-policy' || row.id === 'approval')).toBe(false)
     expect(byId.get(shippedWorkspace().id)?.disabled).toBe(true)
     expect(byId.get('remote-ssh-workspace-registry')?.name).toBe('dsh-remote-ssh/workspace-registry')
     expect(byId.get('ptc-runtime')?.isolate?.subprocess).toBe('remote-ssh/local-subprocess')

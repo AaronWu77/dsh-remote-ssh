@@ -1,0 +1,16 @@
+# Bilingual-pair consistency record for guide.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write local-plugins/plugins/remote-ssh/docs/upgrade-guide/v0.2.4-aaron.12-sidebar.6/connection-management/guide.md
+/:
+  en: 7fdd6cac3d71c41e
+  zh: 2877166c24afa50a
+/remote-ssh-connection-management:
+  en: df28a741e47a00c3
+  zh: 964798e4739bb6e9
+/remote-ssh-connection-management/change:
+  en: 816cdb8f8fb2ea8a
+  zh: 72a40bbf666fcd53
+/remote-ssh-connection-management/migration:
+  en: a765db9d4eb93295
+  zh: 9db5634e68fe5209

@@ -1,6 +1,18 @@
-# Upgrade to 0.2.4-aaron.9
+# Upgrade this Remote SSH fork
+
+The Sidebar `.5` candidate must be installed with Better Sidebar `0.19.3-remote.5`. Its search returns relative filename matches and partial-result status, with caller cancellation; see the [Sidebar search migration](docs/upgrade-guide/v0.2.4-aaron.12-sidebar.3/sidebar-search/guide.md) / [中文](docs/upgrade-guide/v0.2.4-aaron.12-sidebar.3/sidebar-search/guide.zh.md). The installation and rollback safety rules below still apply.
 
 This fork targets DSH 0.2.0-rc.2. Install the immutable local archive, not the upstream npm package. Preserve the previous archive and profile manifest/lockfile/patch before installation; start a verification profile without the live Web listener before activating the update. Restart the live Web profile only during an agreed maintenance window, then refresh the existing GUI URL.
+
+## Offline installation
+
+Stop the Web service before changing installed packages or profile patches. Profile patch watching can reconcile plugins even when no process restart was requested; replacing loaded artifacts while that watcher runs can mix module generations. Stage and test the archive separately, install only after the old listener is stopped, then start the service manually.
+
+## Native local confinement and remote session policy
+
+The bundle no longer overrides `sandbox-policy.config.mode` to `danger-full-access` or `approval.config.policy` to `never`. Existing profile-level overrides remain effective; remove those overrides yourself if they are not intended. Local shells use the official sandbox executors. Remote restricted shell calls now reject in their remote world instead of weakening local policy or executing on the host. Set the remote Session to `danger-full-access` only after reviewing its SSH account, container, or VM isolation.
+
+Shell budgets and `pwshPath` are volatile configuration fields. The legacy PowerShell `executable` override remains supported; custom Bash executable paths now reject at load. Remove Bash `executable` and place the required Bash on PATH. Explicit Session-owned shell and subprocess calls now require a live world binding; callers outside a live Agent must omit Session ids rather than reuse a disposed id. Native subprocess rejection notes use the official wording `subprocess failed before reporting an outcome:` while retaining independent and consuming UTF-8 reads. No Session data migration is required.
 
 ## Trusted Web routes, connection bounds, and mappings
 

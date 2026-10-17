@@ -13,8 +13,8 @@ export function apply(ctx: Context): void {
   const bound = new WeakSet<Agent>()
   const pending = new Set<Agent>()
 
-  const bind = (agent: Agent): boolean => {
-    if (bound.has(agent)) return true
+  const bind = (agent: Agent): void => {
+    if (bound.has(agent)) return
     const cwd = agent.session.header.cwd
     const dialect = manager.dialectFor(cwd)
     const hiddenDialect = dialect === 'bash' ? 'pwsh' : 'bash'
@@ -26,7 +26,7 @@ export function apply(ctx: Context): void {
     const base = ctx.tools.get(dialect)
     if (base === undefined || ctx.tools.get(hiddenDialect) === undefined) {
       pending.add(agent)
-      return false
+      return
     }
 
     pending.delete(agent)
@@ -36,11 +36,10 @@ export function apply(ctx: Context): void {
     try {
       if (route?.kind === 'remote') installRemoteWorkspacePrompt(agent.ctx, route)
       agent.ctx.tools.restrict({ deny: [hiddenDialect] })
-      if (base !== undefined && route?.kind === 'remote') {
+      if (route?.kind === 'remote') {
         agent.ctx.tools.register(remoteShellPresentation(base, manager, route))
       }
       bound.add(agent)
-      return true
     } catch (error) {
       manager.unbindSession(sessionId, agent)
       throw error

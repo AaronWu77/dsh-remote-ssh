@@ -13,7 +13,7 @@ import type {
   FsWriteOutcome,
 } from '@deepseek-ai/dsh-fs'
 import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox'
-import type { RemoteSshManager, RemoteWorkspaceRoute } from './manager.ts'
+import type { RemoteSshManager, RemoteWorkspaceContext, RemoteWorkspaceRoute } from './manager.ts'
 import { binaryWriter } from './binary-fs.ts'
 import type { FsBytesWriteOutcome } from './binary-fs.ts'
 import { fileUriFromPosixPath } from './index.ts'
@@ -25,7 +25,9 @@ interface RemoteTargetEnvelope {
 
 const PREFIX = 'dsh-remote-ssh:'
 
-/** Filesystem router that keeps ordinary fs tools unchanged across execution worlds. */
+/** Filesystem router that keeps ordinary fs tools unchanged across execution worlds.
+ * Remote operations reserve the connection through context allocation and RPC settlement.
+ */
 export class TransparentFileSystem extends FileSystem {
   static inject = ['localFs', 'remoteSshManager']
 
@@ -38,11 +40,13 @@ export class TransparentFileSystem extends FileSystem {
     this.manager = ctx.remoteSshManager
   }
 
+  /** Preserve confinement advertisement so tools stamp session-owned policy onto local mutations. */
+  override get sandboxMode() { return this.local.sandboxMode }
+
   override async resolve(path: string, opts?: { cwd?: string; signal?: AbortSignal }): Promise<FsTarget> {
     const route = this.manager.route(path, opts?.cwd)
     if (route.kind === 'local') return this.local.resolve(path, opts)
-    const remote = await this.manager.workspaceContext(route)
-    return wrapTarget(route, await remote.fs.resolve(path, opts))
+    return this.withRemote(route, async remote => wrapTarget(route, await remote.fs.resolve(path, opts)))
   }
 
   override processPath(target: FsTarget): string {
@@ -84,43 +88,40 @@ export class TransparentFileSystem extends FileSystem {
   }
 
   override async stat(target: FsTarget, signal?: AbortSignal): Promise<FsInfo | undefined> {
-    const backend = await this.backend(target)
-    return backend.fs.stat(backend.target, signal)
+    return this.withBackend(target, (fs, unwrapped) => fs.stat(unwrapped, signal))
   }
 
   override async lstat(path: string, opts?: { cwd?: string }, signal?: AbortSignal): Promise<FsPathInfo | undefined> {
     const route = this.manager.route(path, opts?.cwd)
     if (route.kind === 'local') return this.local.lstat(path, opts, signal)
-    return (await this.manager.workspaceContext(route)).fs.lstat(path, opts, signal)
+    return this.withRemote(route, remote => remote.fs.lstat(path, opts, signal))
   }
 
   override async readText(target: FsTarget, signal?: AbortSignal): Promise<string> {
-    const backend = await this.backend(target)
-    return backend.fs.readText(backend.target, signal)
+    return this.withBackend(target, (fs, unwrapped) => fs.readText(unwrapped, signal))
   }
 
+  // The remote provider completes its RPC read before returning the in-memory text iterable.
   override async streamText(target: FsTarget, signal?: AbortSignal): Promise<AsyncIterable<string>> {
-    const backend = await this.backend(target)
-    return backend.fs.streamText(backend.target, signal)
+    return this.withBackend(target, (fs, unwrapped) => fs.streamText(unwrapped, signal))
   }
 
   override async readBytes(target: FsTarget, signal: AbortSignal | undefined, maxBytes: number): Promise<Uint8Array> {
-    const backend = await this.backend(target)
-    return backend.fs.readBytes(backend.target, signal, maxBytes)
+    return this.withBackend(target, (fs, unwrapped) => fs.readBytes(unwrapped, signal, maxBytes))
   }
 
   override async readByteRange(target: FsTarget, range: { offset: number; length: number }, signal?: AbortSignal): Promise<Uint8Array> {
-    const backend = await this.backend(target)
-    return backend.fs.readByteRange(backend.target, range, signal)
+    return this.withBackend(target, (fs, unwrapped) => fs.readByteRange(unwrapped, range, signal))
   }
 
   override async listDir(target: FsTarget, signal?: AbortSignal): Promise<FsDirEntry[]> {
     const decoded = decodeTarget(target)
     if (decoded === undefined) return this.local.listDir(target, signal)
     const route = this.manager.workspace(decoded.workspaceId)
-    const remote = await this.manager.workspaceContext(route)
-    const entries = await remote.fs.listDir(unwrapTarget(target, decoded), signal)
-    return entries.map(entry => ({ ...entry, target: wrapTarget(route, entry.target) }))
+    return this.withRemote(route, async remote => {
+      const entries = await remote.fs.listDir(unwrapTarget(target, decoded), signal)
+      return entries.map(entry => ({ ...entry, target: wrapTarget(route, entry.target) }))
+    })
   }
 
   override async writeText(
@@ -130,8 +131,7 @@ export class TransparentFileSystem extends FileSystem {
     signal?: AbortSignal,
     sandboxPolicy?: SandboxExecutionPolicy,
   ): Promise<FsWriteOutcome> {
-    const backend = await this.backend(target)
-    return backend.fs.writeText(backend.target, content, expected, signal, sandboxPolicy)
+    return this.withBackend(target, (fs, unwrapped) => fs.writeText(unwrapped, content, expected, signal, sandboxPolicy))
   }
 
   async writeBytes(
@@ -141,8 +141,7 @@ export class TransparentFileSystem extends FileSystem {
     signal?: AbortSignal,
     sandboxPolicy?: SandboxExecutionPolicy,
   ): Promise<FsBytesWriteOutcome> {
-    const backend = await this.backend(target)
-    return binaryWriter(backend.fs).writeBytes(backend.target, content, expected, signal, sandboxPolicy)
+    return this.withBackend(target, (fs, unwrapped) => binaryWriter(fs).writeBytes(unwrapped, content, expected, signal, sandboxPolicy))
   }
 
   override async editText(
@@ -152,16 +151,22 @@ export class TransparentFileSystem extends FileSystem {
     signal?: AbortSignal,
     sandboxPolicy?: SandboxExecutionPolicy,
   ): Promise<FsEditOutcome> {
-    const backend = await this.backend(target)
-    return backend.fs.editText(backend.target, edit, expected, signal, sandboxPolicy)
+    return this.withBackend(target, (fs, unwrapped) => fs.editText(unwrapped, edit, expected, signal, sandboxPolicy))
   }
 
-  private async backend(target: FsTarget): Promise<{ fs: FileSystem; target: FsTarget }> {
+  private async withBackend<T>(target: FsTarget, operation: (fs: FileSystem, target: FsTarget) => Promise<T>): Promise<T> {
     const decoded = decodeTarget(target)
-    if (decoded === undefined) return { fs: this.local, target }
+    if (decoded === undefined) return operation(this.local, target)
     const route = this.manager.workspace(decoded.workspaceId)
-    const remote = await this.manager.workspaceContext(route)
-    return { fs: remote.fs, target: unwrapTarget(target, decoded) }
+    return this.withRemote(route, remote => operation(remote.fs, unwrapTarget(target, decoded)))
+  }
+
+  private async withRemote<T>(route: RemoteWorkspaceRoute, operation: (remote: RemoteWorkspaceContext) => Promise<T>): Promise<T> {
+    const release = this.manager.ownConnectionUse()
+    try {
+      const remote = await this.manager.workspaceContext(route)
+      return await operation(remote)
+    } finally { release() }
   }
 }
 

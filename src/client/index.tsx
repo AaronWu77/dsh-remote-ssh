@@ -34,14 +34,10 @@ export function apply(ctx: ClientContext): void {
   const t = ctx.locale.bind(namespace) as RemoteWorkspaceFlowInjected['t']
   installRemoteOpenPath(ctx)
 
-  ctx.slots.inject('settings.section', () => ctx.slots.register({
-    name: 'settings.section', id: 'remote-ssh', order: 16, label: () => t('nav'), inject: () => ({ t }),
-  }, RemoteSshSettings))
-
   const injected = (): RemoteWorkspaceFlowInjected => ({
     t,
-    listLocal: async (path?: string): Promise<RemoteDirectoryListing> => {
-      const listing = await ctx.uiWorkspace.listDirectory(path)
+    listLocal: async (path?: string, signal?: AbortSignal): Promise<RemoteDirectoryListing> => {
+      const listing = await ctx.uiWorkspace.listDirectory(path, signal)
       const parent = listing.crumbs.length > 1 ? listing.crumbs[listing.crumbs.length - 2]?.path : undefined
       return {
         path: listing.path,
@@ -51,6 +47,10 @@ export function apply(ctx: ClientContext): void {
       }
     },
   })
+  ctx.slots.inject('settings.section', () => ctx.slots.register({
+    name: 'settings.section', id: 'remote-ssh', order: 16, label: () => t('nav'), inject: injected,
+  }, RemoteSshSettings))
+
   ctx.slots.inject('conversation.hero.workspace.directoryFlow', () =>
     ctx.slots.inject('sidebar.workspaces.directoryFlow', function* () {
       yield ctx.slots.register({ name: 'conversation.hero.workspace.directoryFlow', inject: injected }, RemoteWorkspaceFlow)

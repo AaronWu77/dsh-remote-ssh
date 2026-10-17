@@ -18,30 +18,43 @@ Host-owned bootstrap and attachment paths map through the preserved local filesy
 - exposes binary workspace writes for artifact plugins such as `dsh-codex` image generation; raw bytes are base64-encoded only inside AHP `resourceWrite` transport;
 - keeps remote search results in POSIX path space and stores oversized tool results in a private runtime directory on the corresponding SSH host for follow-up `read`/`grep` access;
 - exposes `bash` for POSIX remote workspaces and `pwsh` for local Windows workspaces;
-- opens remote file links in an installed VS Code-compatible editor through its Remote SSH extension, with a local downloaded snapshot as fallback;
+- keeps conversation file links in Better Sidebar's active native editor; standalone or explicit external opening uses an installed VS Code-compatible editor through Remote SSH, with a local downloaded snapshot as fallback;
+- integrates with Better Sidebar through a type-only `dsh-better-sidebar/workspace-provider` capability seam; when the Remote SSH manager is configured, it publishes the authoritative remote filesystem, Git and terminal backend through a lifecycle-owned router. A missing contribution fails closed with HTTP 503 rather than falling back to the local filesystem. Install the matched Remote SSH and Better Sidebar candidates only after stopping the Web service;
 - reuses one persistent SSH/AHP host connection while each Bash call opens its own terminal channel, like a new VS Code terminal tab;
 - shares one host-scoped SSH/AHP connection across workspaces on the same server;
 - preserves readable Workspace and Session history after a remote mapping is removed, while rejecting new tool calls from the old session.
 
-Remote workspaces currently support Linux hosts with readable `/proc`, `ps`, `awk`, and an external `kill` executable. Windows and non-Linux POSIX SSH hosts are not supported.
+Remote workspaces currently support Linux hosts with readable `/proc`, `ps`, `awk`, and an external `kill` executable. The Sidebar bridge defaults to GNU `realpath`, `stat`, and `base64` for canonical paths and lexical symlink metadata; an AHP server that ignores `followSymlinks` cannot supply those facts. See [the bridge migration guide](docs/upgrade-guide/v0.2.4-aaron.11/sidebar-workspace/guide.md) before choosing `pathMetadata: ahp`. Windows and non-Linux POSIX SSH hosts are not supported.
+
+Windows drive and UNC file addresses select the local host unless they match an explicitly registered remote alias. On a Windows host, a collapsed WSL share address remains local as well; it is not interpreted as a POSIX path on the current SSH server. Local WSL opening is delegated to the original Sidebar handler, which keeps its path canonicalization and permissions. A genuine Linux `/wsl.localhost/…` path in a POSIX host namespace retains its remote meaning.
 
 ## Agent Host compatibility
 
 This fork pins the official AHP SDK 1.0.0 and offers its supported protocols, `1.0.0` and `0.9.0`. It does not advertise `0.10.0`, `0.8.0`, or legacy `0.7.x`. An incompatible embedded candidate is stopped before the next candidate starts; a successful host connection remains active until disposal. A real Linux Agent Host negotiated `0.9.0` and passed UTF-8 writes, binary byte-range reads, and terminal execution.
 
-Set manager `protocolVersions: ["0.9.0"]` to restrict negotiation. Changing this list or connection timeouts invalidates host/workspace connection caches. Every SSH transport runs `-o BatchMode=yes` with `connectTimeoutMs` (default 10000, seconds-rounded on the command line), because no channel can answer an interactive prompt. Startup uses one deadline across all candidates; expiry or disposal prevents further candidate and tunnel spawns. Runtime `shutdownTimeoutMs` controls TERM grace and post-KILL settling. Embedded data is beneath `remoteRuntimeRoot`; cleanup validates the leader data directory and retains group-member birth identities through leader exit. Live group members must be gone before cleanup succeeds. A workspace may map any remote directory except the remote root `/`, which would claim every POSIX-absolute path on a POSIX host and is rejected at configuration validation.
+Set manager `protocolVersions: ["0.9.0"]` to restrict negotiation. Changing this list or connection timeouts invalidates host/workspace connection caches. Every SSH transport runs `-o BatchMode=yes` with `connectTimeoutMs` (default 10000, seconds-rounded on the command line), because no channel can answer an interactive prompt. Each startup attempt uses one deadline across all its candidates; expiry or disposal prevents further candidate and tunnel spawns in that attempt. Runtime `shutdownTimeoutMs` controls TERM grace and post-KILL settling. Embedded data is beneath `remoteRuntimeRoot`; cleanup validates the leader data directory and retains group-member birth identities through leader exit. Live group members must be gone before cleanup succeeds. A workspace may map any remote directory except the remote root `/`, which would claim every POSIX-absolute path on a POSIX host and is rejected at configuration validation.
 
 The directory picker shows a localized failure summary and expandable diagnostics. The Web provider accepts `maxErrorCharacters` (default 16384) and registers only where the composition provides `connection`: every route asks that service's browser-trust fence for a rejection first (401/403), so an unauthenticated or rebinding-shaped caller never reaches a handler. URL/CLI connection tokens are redacted. See [the fork upgrade guide](UPGRADE.md) before replacing the previous archive.
 
+## SSH execution diagnostics and custom configuration
+
+A silent nonzero startup exit retains its stage and SSH exit code. Failed embedded discovery reports `ssh_execution_failed`, not a missing Agent Host; only exit 0 with no candidates means no installed embedded host. Candidate compatibility failures remain `agent_host_unavailable`. Exit 255 alone is not an authentication diagnosis: inspect the bounded, token-redacted details and the local SSH launch environment first (including Windows `ProgramData`). The plugin does not repair launcher environment variables or automatically switch to Git SSH. A failed attempt leaves the connection retryable: once its owned cleanup succeeds, the next explicit request starts a new attempt with a fresh deadline, and requests already waiting share the attempt in flight. A failed cleanup keeps the failure visible and starts no further attempt. No file, search or terminal operation is replayed.
+
+Manager `sshConfigFile` controls both discovery and connections: runtime startup, tunnels, cleanup and the Web probe receive exactly one `-F <selected absolute path>`. With no selected file, no `-F` is injected and normal OpenSSH defaults apply. Existing server arguments (user, ProxyJump, identity) remain intact. When a custom file is selected, any server `sshArgs` config override (split, attached or grouped `-F`) is rejected, even if it names the same file; remove it and use the manager setting. Without a manager override, explicit server arguments remain supported. Changing the setting retires cached host/workspace transports and changes the multiplexing key. Runtime connect timeout remains 10 seconds by default; the Web probe retains 5 seconds.
+
 ## Install
 
-This editable fork targets DSH 0.2.0-rc.2. Build and install its local archive; the npm registry package is the upstream release, not this fork:
+The Sidebar `.6` pair preserves conversation file-resource identity in the active native editor instead of substituting local download paths; see the [file-navigation migration guide](docs/upgrade-guide/v0.2.4-aaron.12-sidebar.5/sidebar-file-navigation/guide.md). Filename-search protocol and limits are unchanged; this release does not optimize large-workspace search latency.
+
+This editable checkout declares DSH 0.2.1-alpha.2 peer dependencies in `package.json`. Build and install its local archive; the npm registry package is the upstream release, not this fork:
 
 ```sh
 pnpm install --ignore-scripts
 pnpm run build
 pnpm pack --pack-destination ./artifacts
-dsh plugin --profile web add file:./artifacts/dsh-remote-ssh-0.2.4-aaron.8.tgz --ignore-scripts
+# Stop the Web service before replacing installed bundles.
+# If Better Sidebar is installed, install its matched 0.19.3-remote.6 archive first.
+dsh plugin --profile web add file:./artifacts/dsh-remote-ssh-0.2.4-aaron.12-sidebar.6.tgz --ignore-scripts
 dsh web
 ```
 
@@ -86,12 +99,12 @@ Codex, Claude Code, and other automation agents should follow [INSTALL.md](INSTA
 
 1. Configure and verify the host with ordinary OpenSSH first. Key or SSH Agent authentication is recommended.
 2. Open **Settings → Remote SSH**. The page reads the platform's default user and system SSH configuration automatically.
-3. Test the host, then select **Browse remote…** to choose a workspace folder.
+3. Test basic SSH access, then select **Add workspace**, choose the SSH host, and confirm a folder after its directory listing loads.
 4. Start or open a session in `<Server> > <folder>`.
 
-To use a non-default SSH configuration, set its absolute path under **Settings → Plugins → Remote SSH → Custom SSH config file**.
+Open **Settings → Remote SSH → Advanced settings** to choose an absolute custom SSH configuration path or leave it blank for platform defaults. Preferences apply across this manager, not to one server. Restore defaults changes only the draft; Save validates the host file and reads back the saved revision. Active remote executions or diagnostics block SSH configuration changes, and existing connections require reset confirmation. Editor-only changes do not reset SSH connections. An interrupted save has an unknown outcome until settings are reloaded; no automatic resend or rollback is claimed.
 
-Remote file links use the first supported VS Code-compatible editor by default. Choose a specific editor or the download-only fallback under **Settings → Plugins → Remote SSH → Open remote files with**.
+With Better Sidebar's native editor active, Sidebar file links open an in-app preview with their original Session address. Standalone navigation and explicit external opening use the first supported VS Code-compatible editor by default. The host configuration fields `remote-ssh-manager.openFileMode` and `openFileEditorPath` select that external mode and optional custom executable; they do not replace in-app previews.
 
 The remote host needs:
 
@@ -101,6 +114,14 @@ The remote host needs:
 - a VS Code Agent Host supplied by the official VS Code CLI or an existing VS Code Server installation.
 
 The plugin checks `code` on PATH, its private `~/.dsh-remote-ssh/cli/bin/code` location, and compatible VS Code Server installations already cached on the host. It does not install remote packages silently.
+
+## Connection diagnostics
+
+Use **Connection diagnostics** on the same settings page after saving or discarding preference drafts. Basic checks execute SSH and report available commands. Deep checks create an independent foreground Agent Host, negotiate AHP and read the selected directory; terminal verification is optional and uses a fixed command. Missing search tools are reported without blocking unrelated directory checks. Deep diagnostics may create remote temporary files and processes, but never install software or alter workspace contents.
+
+Cancel stops only diagnostic-owned resources. A lost browser cancellation is covered by the task lease. Cleanup is reported separately from connection success; missing remote process ownership or unverifiable termination is a visible failure, never a clean result. Exported reports omit raw SSH output, addresses, account names, paths, argv and tokens. Reports retain the configuration revision and are marked outdated after preferences change. They are held in memory only and expire or disappear on restart.
+
+The Web provider exposes `diagnosticTimeoutMs` (120000), `diagnosticTerminalTimeoutMs` (15000), `diagnosticLeaseMs` (45000), `diagnosticRetentionMs` (600000), `diagnosticMaxConcurrent` (2), and `diagnosticMaxRetained` (20). The retired standalone probes are replaced by this authenticated workflow; see [the connection-management upgrade guide](docs/upgrade-guide/v0.2.4-aaron.12-sidebar.6/connection-management/guide.md).
 
 ## How workspaces behave
 
@@ -131,13 +152,15 @@ AHP negotiation is independent from binary updates. If a newly cached Agent Host
 
 Remote commands have the permissions of the SSH account. AHP permissions are not an operating-system sandbox, and one SSH account can normally reach paths outside the selected workspace when the active dsh policy grants full access.
 
-The bundle currently selects `danger-full-access` with approval policy `never` so local and remote tools have consistent semantics. Use a dedicated Unix account, container, or VM when stronger isolation is required.
+The bundle preserves the profile’s sandbox and approval defaults. The filesystem router advertises its local provider’s confinement, so write and edit receive the calling Session’s sandbox policy rather than an agentless deployment fallback. Local shell calls use the official sandbox Bash or PowerShell executor, including per-call confinement, denial details, runner failures, cancellation, and managed-process cleanup. Remote shell calls reject `read-only` and `workspace-write` after selecting the remote execution world; they never fall back to the local host. Explicitly select `danger-full-access` for a remote session only when the SSH account’s access is acceptable. Use a dedicated Unix account, container, or VM when stronger remote isolation is required.
+
+Shell rows retain live `cwd`, `timeoutMs`, `maxTimeoutMs`, `maxOutputBytes`, `maxSpillBytes`, `graceMs`, and `pwshPath` configuration. PowerShell also accepts the legacy `executable` override. Bash accepts only an omitted `executable` or the literal `bash`; a custom executable rejects at load because the official executor uses Bash from PATH. Calls carrying a Session id require its live execution-world binding; a disposed or unknown Session never selects a host from path text.
 
 Passwords, MFA prompts, and first-use host-key confirmation are not bridged into the Web UI. Complete those steps with OpenSSH before using the host in dsh.
 
 ## Compatibility
 
-- DeepSeek Harness `0.2.0-rc.2` package surface;
+- DeepSeek Harness `0.2.1-alpha.2` declared peer dependencies;
 - POSIX/Linux SSH hosts;
 - `@microsoft/agent-host-protocol` 1.0.0 client offering AHP 1.0.0 and 0.9.0;
 - system OpenSSH configuration, SSH Agent, `known_hosts`, and `ProxyJump`.
@@ -145,7 +168,7 @@ Passwords, MFA prompts, and first-use host-key confirmation are not bridged into
 
 ### Local 0.2 Web profile
 
-The fork uses pnpm 11.7.0 and DSH 0.2.0-rc.2 peers. Settings are stored through the manager’s volatile profile configuration and `settings.replace`, without replacing the running manager or its Session bindings. Local directory selection uses `uiWorkspace.listDirectory`. File resources use the address-owning Session and `sidebarRight.openResource`, with built-in preview on native-open failure.
+The enclosing local-plugin workspace pins pnpm 11.28.5; this checkout declares DSH 0.2.1-alpha.2 peers. Settings are stored through the manager’s volatile profile configuration and `settings.replace`, without replacing the running manager or its Session bindings. Local directory selection uses `uiWorkspace.listDirectory`. File resources use the address-owning Session and `sidebarRight.openResource`, with built-in preview on native-open failure.
 
 The PTC interpreter uses preserved local filesystem and subprocess providers. Its control pipe and bootstrap paths cannot run through AHP. Calls made through `tools` still use the routed providers; direct Node filesystem or process imports remain local. Restart the existing Web service after installation; refreshing a page alone does not load a new profile bundle.
 

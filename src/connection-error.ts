@@ -1,5 +1,14 @@
 /** Agent Host candidate failures exposed without transport credentials. */
 
+/** SSH could not execute a startup/discovery operation; this is not evidence of a missing installation. */
+export class SshExecutionError extends Error {
+  readonly code = 'ssh_execution_failed'
+  constructor(readonly stage: string, readonly exitCode: number | null, diagnostics: readonly string[]) {
+    super(formatConnectionDiagnostic('dsh-remote-ssh: SSH execution failed at ' + stage + ' (ssh exit ' + (exitCode ?? 'unknown') + ')\n' + diagnostics.join('\n'), 16_384))
+    this.name = 'SshExecutionError'
+  }
+}
+
 /**
  * An exhausted candidate list; diagnostics retain each attempted entry.
  * @param versions - Protocol versions offered by the client.
@@ -8,7 +17,7 @@
 export class AgentHostConnectionError extends Error {
   readonly code = 'agent_host_unavailable'
   constructor(readonly versions: readonly string[], readonly diagnostics: readonly string[]) {
-    super(redactConnectionCredentials('dsh-remote-ssh: no compatible VS Code Agent Host found. Client protocols: [' + versions.join(', ') + ']\n' + diagnostics.join('\n')))
+    super(formatConnectionDiagnostic('dsh-remote-ssh: no compatible VS Code Agent Host found. Client protocols: [' + versions.join(', ') + ']\n' + diagnostics.join('\n'), 16_384))
     this.name = 'AgentHostConnectionError'
   }
 }

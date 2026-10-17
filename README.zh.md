@@ -18,30 +18,43 @@
 - 为 `dsh-codex` 生图等制品插件提供二进制工作区写入；原始字节只在 AHP `resourceWrite` 传输内部编码为 base64；
 - 远端搜索结果始终使用 POSIX 路径；超长工具结果保存在对应 SSH 主机的私有运行目录，可继续用 `read`/`grep` 分页读取；
 - POSIX 远端工作区只显示 `bash`，Windows 本机工作区只显示 `pwsh`；
-- 远端文件链接通过本机 VSC 兼容编辑器的 Remote SSH 打开；不可用时下载快照并在本机打开；
+- Better Sidebar 原生编辑器启用时，对话文件链接在该编辑器内预览；单独使用或显式外部打开时，通过本机 VSC 兼容编辑器的 Remote SSH 打开，不可用时下载本地快照；
+- 通过只供类型导入的 `dsh-better-sidebar/workspace-provider` 能力接口接入 Better Sidebar；配置 Remote SSH manager 时，以受生命周期管理的路由发布权威远端文件系统、Git 和终端后端。缺少联动贡献时会返回 HTTP 503，不会回退本机文件系统。停止 Web 服务后才能一起安装配套 Remote SSH 和 Better Sidebar 候选包；
 - 每台服务器复用一条 SSH/AHP 长连接；每次 Bash 调用像 VS Code 新建终端标签页一样打开独立 channel，不会重新进行 SSH 握手；
 - 同一服务器上的多个工作区共享一个 host 级 SSH/AHP 连接；
 - 删除远端映射后保留可阅读的 Workspace 与 Session 历史，但旧会话不能继续调用工具。
 
-远端工作区目前支持具有可读 `/proc`、`ps`、`awk` 及外部 `kill` 可执行文件 的 Linux 主机，不支持 Windows 或其他非 Linux POSIX SSH 主机。
+远端工作区目前支持具有可读 `/proc`、`ps`、`awk` 及外部 `kill` 可执行文件的 Linux 主机。侧栏桥接默认使用 GNU `realpath`、`stat` 和 `base64` 获取规范路径和链接本身的元数据；忽略 `followSymlinks` 的 AHP 服务端无法提供这些事实。选择 `pathMetadata: ahp` 前，请阅读[桥接迁移指南](docs/upgrade-guide/v0.2.4-aaron.11/sidebar-workspace/guide.zh.md)。不支持 Windows 或其他非 Linux POSIX SSH 主机。
+
+Windows 盘符与 UNC 文件地址属于本地主机，除非明确匹配已登记的远程别名。在 Windows 主机上，丢失一个前导分隔符的 WSL share 地址也保持本地含义，不会被解释为当前 SSH 服务器上的 POSIX 路径。本地 WSL 文件打开委托给原 Sidebar 处理器，继续进行路径规范化和权限检查。POSIX 主机命名空间里的真实 Linux `/wsl.localhost/…` 路径仍保留远端含义。
 
 ## Agent Host 兼容性
 
 此 fork 固定使用官方 AHP SDK 1.0.0，声明该 SDK 支持的 `1.0.0` 和 `0.9.0` 协议；不声明 `0.10.0`、`0.8.0` 或旧 `0.7.x`。不兼容的嵌入式候选会先停止，再尝试下一候选；成功连接会保留到插件释放。真实 Linux Agent Host 已协商 `0.9.0`，并通过 UTF-8 写入、二进制字节范围读取及终端执行测试。
 
-manager 的 `protocolVersions: ["0.9.0"]` 可限制协商版本。修改版本列表或连接超时会清空 host/workspace 连接缓存。所有 SSH 传输都带 `-o BatchMode=yes` 与 `connectTimeoutMs`（默认 10000，按秒取整写入命令行），因为没有任何通道能回答交互式提示。全部候选共用一次启动期限；超时或释放后不会再启动候选或隧道。runtime 的 `shutdownTimeoutMs` 控制 TERM 宽限及 KILL 后等待时间。嵌入式数据位于 `remoteRuntimeRoot` 下；清理会验证组长的数据目录，并在组长退出后保留成员的启动身份。仅在进程组不再有存活成员时报告清理成功。工作区可映射远端任意目录，但不能映射远端根 `/`：在 POSIX 主机上它会认领所有 POSIX 绝对路径，因此在配置校验阶段即被拒绝。
+manager 的 `protocolVersions: ["0.9.0"]` 可限制协商版本。修改版本列表或连接超时会清空 host/workspace 连接缓存。所有 SSH 传输都带 `-o BatchMode=yes` 与 `connectTimeoutMs`（默认 10000，按秒取整写入命令行），因为没有任何通道能回答交互式提示。每一轮启动尝试为自己的全部候选共用一次启动期限；超时或释放后不会再启动该轮的候选或隧道。runtime 的 `shutdownTimeoutMs` 控制 TERM 宽限及 KILL 后等待时间。嵌入式数据位于 `remoteRuntimeRoot` 下；清理会验证组长的数据目录，并在组长退出后保留成员的启动身份。仅在进程组不再有存活成员时报告清理成功。工作区可映射远端任意目录，但不能映射远端根 `/`：在 POSIX 主机上它会认领所有 POSIX 绝对路径，因此在配置校验阶段即被拒绝。
 
 目录选择器显示本地化错误摘要和可展开详情。Web provider 的 `maxErrorCharacters` 默认值为 16384，且只在组合提供了 `connection` 时注册路由：每个路由先向该服务的浏览器信任栅栏要一个拒绝（401/403），未认证或形似 DNS rebinding 的调用者无法进入任何处理函数。URL/CLI 连接令牌会被遮盖。替换旧安装包前，请阅读 [fork 升级指南](UPGRADE.md)。
 
+## SSH 执行诊断与自定义配置
+
+启动进程无输出但非零退出时，仍保留阶段和 SSH 退出码。嵌入式发现执行失败返回 `ssh_execution_failed`，不能解释为未安装 Agent Host；仅退出码 0 且候选列表为空才代表没有已安装的嵌入式 Host。候选协议兼容性失败仍为 `agent_host_unavailable`。仅凭退出码 255 不能认定认证失败：应先检查有长度上限且连接令牌已遮盖的详情，以及本机 SSH 启动环境（包括 Windows 的 `ProgramData`）。插件不会修复启动器环境变量，也不会自动切换到 Git SSH。一次失败不会让连接永久失效：本次清理成功后，下一次显式请求会以新的期限启动新一轮尝试，已在等待的请求共享进行中的那一轮。清理失败时该失败保持可见，且不会开始新的尝试。不会重放任何文件、搜索或终端操作。
+
+manager 的 `sshConfigFile` 同时控制发现和实际连接：runtime 启动、隧道、清理及 Web 测试统一传入一个 `-F <所选绝对路径>`。未设置时不额外传入 `-F`，沿用 OpenSSH 默认配置。服务器现有的用户、ProxyJump、身份文件参数保持不变。选择自定义文件后，服务器 `sshArgs` 中分离、紧连或组合形式的 `-F` 均被拒绝，即使文件相同；请移除该参数，改用 manager 设置。未选择 manager 覆盖时，仍支持显式服务器参数。更改该设置会释放缓存的 host/workspace 传输并更换复用连接键。runtime 连接超时默认仍为 10 秒，Web 测试仍为 5 秒。
+
 ## 安装
 
-此可编辑 fork 对应 DSH 0.2.0-rc.2。请构建并安装本地归档；npm registry 中的是上游版本，不包含此 fork 的适配：
+侧栏 `.6` 配套包在当前原生编辑器内保留对话文件资源标识，不替换成本地下载路径，详见[文件导航迁移指南](docs/upgrade-guide/v0.2.4-aaron.12-sidebar.5/sidebar-file-navigation/guide.zh.md)。文件名搜索的协议与上限保持不变；此版本不优化大型工作区搜索延迟。
+
+此可编辑 checkout 在 `package.json` 中声明 DSH 0.2.1-alpha.2 peer 依赖。请构建并安装本地归档；npm registry 中的是上游版本，不包含此 fork 的适配：
 
 ```sh
 pnpm install --ignore-scripts
 pnpm run build
 pnpm pack --pack-destination ./artifacts
-dsh plugin --profile web add file:./artifacts/dsh-remote-ssh-0.2.4-aaron.8.tgz --ignore-scripts
+# 替换已安装 bundle 前，先停止 Web 服务。
+# 若安装了 Better Sidebar，请先安装配套的 0.19.3-remote.6 归档。
+dsh plugin --profile web add file:./artifacts/dsh-remote-ssh-0.2.4-aaron.12-sidebar.6.tgz --ignore-scripts
 dsh web
 ```
 
@@ -83,12 +96,12 @@ Codex、Claude Code 及其他自动化 Agent 应直接遵循 [INSTALL.md](INSTAL
 
 1. 先用普通 OpenSSH 配置并验证主机，推荐使用 SSH Key 或 SSH Agent 认证。
 2. 打开 **设置 → Remote SSH**。页面会自动读取平台默认的用户与系统 SSH 配置。
-3. 测试主机，然后用 **浏览远端…** 选择工作区目录。
+3. 测试基本 SSH 访问，然后点击 **添加工作区**、选择 SSH 主机，等待目录列表加载后确认文件夹。
 4. 在 `<服务器> > <目录>` 中新建或打开会话。
 
-如需使用非默认配置，在 **设置 → 插件 → Remote SSH → 自定义 SSH 配置文件** 中填写绝对路径。
+打开 **设置 → Remote SSH → 高级设置**，选择自定义 SSH 配置的绝对路径，或留空使用平台默认配置。这些偏好作用于整个 manager，不限于单台服务器。“恢复默认”只改草稿；保存时验证宿主文件并回读保存版本。存在活动远端执行或诊断时会阻止 SSH 配置变更，已有连接需要确认重置。仅修改编辑器偏好不会重置 SSH 连接。中断保存后的结果须重新读取才能确认，不会自动重发或声称已经回滚。
 
-远端文件链接默认自动选择可用的 VSC 兼容编辑器。也可以在 **设置 → 插件 → Remote SSH → 远端文件打开方式** 中指定编辑器，或始终下载后在本机打开。
+启用 Better Sidebar 原生编辑器时，侧栏文件链接保留原始会话地址并在应用内预览。单独使用时的导航和显式外部打开默认选择可用的 VSC 兼容编辑器。外部模式及可选的自定义可执行文件通过宿主配置字段 `remote-ssh-manager.openFileMode` 和 `openFileEditorPath` 指定，不会替换应用内预览。
 
 远端主机需要：
 
@@ -98,6 +111,14 @@ Codex、Claude Code 及其他自动化 Agent 应直接遵循 [INSTALL.md](INSTAL
 - 由官方 VS Code CLI 或已有 VS Code Server 提供的 VS Code Agent Host。
 
 插件会依次检查 PATH 中的 `code`、私有位置 `~/.dsh-remote-ssh/cli/bin/code`，以及主机上已经缓存的兼容 VS Code Server。插件不会静默安装远端软件包。
+
+## 连接诊断
+
+在同一设置页保存或放弃偏好草稿后，使用 **连接诊断**。基础检查执行 SSH 并报告可用命令。深度检查创建独立前台 Agent Host、协商 AHP 并读取所选目录；终端验证为可选项，使用固定命令。缺少搜索工具时会提示，但不会阻止无关的目录检查。深度诊断可能创建远端临时文件和进程，但不会安装软件或修改工作区内容。
+
+取消仅停止诊断自身拥有的资源。浏览器取消请求丢失时，由任务租约兜底。清理结果独立于连接成功报告；缺少远端进程身份或无法确认退出时，必须显示失败，不能报告已清理。导出报告不包含原始 SSH 输出、地址、账号、路径、参数或令牌。报告保留配置版本，偏好变更后标记过期。报告只保存在内存中，到期或服务重启后消失。
+
+Web 提供器开放 `diagnosticTimeoutMs`（120000）、`diagnosticTerminalTimeoutMs`（15000）、`diagnosticLeaseMs`（45000）、`diagnosticRetentionMs`（600000）、`diagnosticMaxConcurrent`（2）及 `diagnosticMaxRetained`（20）。已退休的独立探针由这套经过认证的流程替代，详见[连接管理升级指南](docs/upgrade-guide/v0.2.4-aaron.12-sidebar.6/connection-management/guide.zh.md)。
 
 ## 工作区行为
 
@@ -128,13 +149,15 @@ AHP 协议协商与二进制更新相互独立。如果新缓存的 Agent Host �
 
 远端命令拥有 SSH 账号本身的权限。AHP permission 不是操作系统 sandbox；当 dsh 策略允许 Full Access 时，同一 SSH 账号通常也能访问所选工作区之外的路径。
 
-为了让本机和远端工具保持一致语义，bundle 当前选择 `danger-full-access` 和 `never` approval policy。需要更强隔离时，请使用专用 Unix 账号、容器或虚拟机。
+bundle 保留 profile 的 sandbox 和 approval 默认配置。文件系统路由转发本地提供方的隔离模式，使 write 和 edit 接收调用 Session 的沙箱策略，而不是无 agent 的部署默认值。本机 shell 调用使用官方 sandbox Bash 或 PowerShell executor，保留逐次调用的隔离、拒绝信息、runner 故障、取消和托管进程清理语义。远端 shell 在选择远端执行环境后拒绝 `read-only` 和 `workspace-write`，绝不回退到本机。只有接受 SSH 账号访问范围时，才应为远端 Session 显式选择 `danger-full-access`。需要更强的远端隔离时，请使用专用 Unix 账号、容器或虚拟机。
+
+Shell 配置保留可实时更新的 `cwd`、`timeoutMs`、`maxTimeoutMs`、`maxOutputBytes`、`maxSpillBytes`、`graceMs` 和 `pwshPath`。PowerShell 也接受旧版 `executable` 覆盖。Bash 仅接受不设置 `executable` 或字面值 `bash`；自定义可执行路径在加载时明确拒绝，因为官方 executor 使用 PATH 中的 Bash。携带 Session id 的调用必须有对应的活动执行环境绑定；已释放或未知的 Session 绝不根据路径文本选择主机。
 
 Web UI 不桥接密码、MFA 和首次 host-key 确认。请先通过 OpenSSH 完成这些步骤。
 
 ## 兼容性
 
-- DeepSeek Harness `0.2.0-rc.2` package surface；
+- 声明的 DeepSeek Harness peer 依赖版本为 `0.2.1-alpha.2`；
 - POSIX/Linux SSH 主机；
 - `@microsoft/agent-host-protocol` 1.0.0 客户端，提供 AHP 1.0.0 和 0.9.0 协议；
 - 系统 OpenSSH 配置、SSH Agent、`known_hosts` 和 `ProxyJump`。
@@ -142,7 +165,7 @@ Web UI 不桥接密码、MFA 和首次 host-key 确认。请先通过 OpenSSH �
 
 ### 本地 0.2 Web profile
 
-此 fork 使用 pnpm 11.7.0，安装 peer 对应 DSH 0.2.0-rc.2。设置通过 manager 的 volatile profile 配置和 `settings.replace` 保存，不替换运行中的 manager，也不清除其 Session 绑定。本地目录选择使用 `uiWorkspace.listDirectory`；文件资源通过地址所属的 Session 和 `sidebarRight.openResource` 打开，原生打开失败时使用内置预览。
+外层本地插件工作区固定使用 pnpm 11.28.5；此 checkout 声明 DSH 0.2.1-alpha.2 peer 依赖。设置通过 manager 的 volatile profile 配置和 `settings.replace` 保存，不替换运行中的 manager，也不清除其 Session 绑定。本地目录选择使用 `uiWorkspace.listDirectory`；文件资源通过地址所属的 Session 和 `sidebarRight.openResource` 打开，原生打开失败时使用内置预览。
 
 PTC 解释器使用保留的本地文件系统和 subprocess provider：AHP 不能承载其控制管道和本机启动文件。通过 `tools` 发起的调用仍使用路由后的 provider；直接导入 Node 文件系统或进程模块的操作仍在本机执行。安装后需要重启现有 Web 服务；仅刷新页面不会加载新的 profile bundle。
 

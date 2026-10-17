@@ -3,7 +3,7 @@ import { win32 } from 'node:path'
 import { PassThrough, Writable } from 'node:stream'
 import type { Readable } from 'node:stream'
 import { ActionType } from '@microsoft/agent-host-protocol'
-import type { ContentEncoding, TerminalClientClaim } from '@microsoft/agent-host-protocol'
+import type { ContentEncoding, Snapshot, TerminalClientClaim } from '@microsoft/agent-host-protocol'
 import type { AhpClient, Subscription } from '@microsoft/agent-host-protocol/client'
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -35,6 +35,8 @@ export interface Config {
   outputPollMs?: number
 }
 
+type RemoteDrainOutcome = 'eof' | 'bounded' | 'cancelled'
+
 interface OutputTransportConfig {
   outputChunkBytes: number
   outputPollMs: number
@@ -57,16 +59,7 @@ export class TransparentSubprocessRuntime extends SubprocessRuntime {
 
   constructor(ctx: Context, config: Config) {
     super(ctx)
-    this.outputTransport = {
-      outputChunkBytes: config.outputChunkBytes ?? 64 * 1024,
-      outputPollMs: config.outputPollMs ?? 40,
-    }
-    for (const [name, value] of Object.entries(this.outputTransport)) {
-      if (!Number.isSafeInteger(value) || value <= 0) throw new Error(
-        `dsh-remote-ssh/router-subprocess: ${name} must be a positive integer`,
-      )
-    }
-    if (this.outputTransport.outputPollMs > 2_147_483_647) throw new Error('dsh-remote-ssh/router-subprocess: outputPollMs exceeds the Node timer range')
+    this.outputTransport = resolveOutputTransport(config)
     this.local = ctx.localSubprocess
     this.manager = ctx.remoteSshManager
     ctx.effect(() => async () => {
@@ -88,46 +81,105 @@ export class TransparentSubprocessRuntime extends SubprocessRuntime {
   }
 
   override spawn(spec: SubprocessSpawnSpec): SubprocessHandle {
-    const route = this.manager.route(undefined, spec.cwd)
+    const route = this.manager.routeShell(spec.cwd, spec.env?.DSH_SESSION_ID)
     if (route.kind === 'local') return this.local.spawn(spec)
-    if (spec.stdio.control === 'pipe') throw new Error('dsh-remote-ssh: remote AHP subprocesses do not support a control pipe; keep the PTC interpreter on localSubprocess')
-    const handle = new RemoteAhpProcessHandle(
-      route,
-      () => this.manager.workspaceContext(route),
-      () => this.manager.workspaceShell(route, 'bash'),
-      spec,
-      this.outputTransport,
-    )
-    const release = this.manager.ownExecution(route, { terminate: () => { handle.terminate() }, done: handle.quiescent })
+    const handle = spawnOwnedRemoteProcess(this.manager, route, spec, this.outputTransport)
     this.remoteHandles.add(handle)
-    void handle.quiescent.then(() => { release(); this.remoteHandles.delete(handle) }).catch(() => {})
-    // Operation failure is caller-visible but does not determine cleanup ownership.
-    void handle.done.catch(() => {})
+    void handle.quiescent.then(() => { this.remoteHandles.delete(handle) }).catch(() => {})
     return handle
   }
 
   override async spawnTerminal(spec: SubprocessTerminalSpawnSpec): Promise<SubprocessTerminalHandle> {
-    const route = this.manager.route(undefined, spec.cwd)
+    const route = this.manager.routeShell(spec.cwd, spec.env?.DSH_SESSION_ID)
     if (route.kind === 'local') return this.local.spawnTerminal(spec)
-    const controller = new AbortController()
-    const signal = spec.signal ? AbortSignal.any([spec.signal, controller.signal]) : controller.signal
-    let quiescent: Promise<void> = Promise.resolve()
-    const allocation = this.manager.workspaceContext(route).then(workspace => RemoteAhpTerminalHandle.create(
-      route, workspace, { ...spec, signal }, cleanup => { quiescent = cleanup },
-    ))
-    const execution = {
-      terminate: () => { controller.abort(new Error('Remote workspace terminal removed')); return allocation.then(handle => handle.terminate(), () => {}) },
-      // Allocation failure does not imply unknown cleanup; the allocator reports it separately.
-      done: allocation.then(() => quiescent, () => quiescent),
-    }
-    const release = this.manager.ownExecution(route, execution)
-    void execution.done.then(release).catch(() => {})
-    const handle = await allocation
+    const handle = await spawnOwnedRemoteTerminal(this.manager, route, spec)
     this.remoteTerminals.add(handle)
     void handle.quiescent.then(() => { this.remoteTerminals.delete(handle) }).catch(() => {})
     void handle.done.catch(() => {})
     return handle
   }
+}
+
+function resolveOutputTransport(config: Config): OutputTransportConfig {
+  const transport = {
+    outputChunkBytes: config.outputChunkBytes ?? 64 * 1024,
+    outputPollMs: config.outputPollMs ?? 40,
+  }
+  for (const [name, value] of Object.entries(transport)) {
+    if (!Number.isSafeInteger(value) || value <= 0) throw new Error(
+      `dsh-remote-ssh/router-subprocess: ${name} must be a positive integer`,
+    )
+  }
+  if (transport.outputPollMs > 2_147_483_647) throw new Error('dsh-remote-ssh/router-subprocess: outputPollMs exceeds the Node timer range')
+  return transport
+}
+
+/**
+ * Spawn byte-preserving output on a previously authorized route without session routing.
+ * Retirement rejects before workspace or process allocation; removal owns cancellation
+ * through authoritative cleanup. Callers own any additional backend teardown.
+ * @param manager - Manager owning the mapped route and execution lifetime.
+ * @param route - Previously authorized Remote SSH workspace route.
+ * @param spec - Remote argv, mapped cwd, streams and cancellation policy.
+ * @param config - Deployment output transport limits, resolved before allocation.
+ * @param ownExecution - Explicit narrower owner; defaults to shared manager route ownership.
+ * @returns A process with separate byte streams and authoritative cleanup settlement.
+ */
+export function spawnOwnedRemoteProcess(manager: RemoteSshManager, route: RemoteWorkspaceRoute, spec: SubprocessSpawnSpec, config: Config = {}, ownExecution: (execution: Parameters<RemoteSshManager['ownExecution']>[1]) => () => void = execution => manager.ownExecution(route, execution)): RemoteAhpProcessHandle {
+  if (spec.stdio.control === 'pipe') throw new Error('dsh-remote-ssh: remote AHP subprocesses do not support a control pipe; keep the PTC interpreter on localSubprocess')
+  const handle = new RemoteAhpProcessHandle(
+    route, () => manager.workspaceContext(route), () => manager.workspaceShell(route, 'bash'), spec, resolveOutputTransport(config),
+  )
+  // execute starts in a microtask, after ownership has accepted or cancelled this handle.
+  void handle.done.catch(() => {})
+  let release: () => void
+  try {
+    release = ownExecution({ terminate: () => { handle.terminate() }, done: handle.quiescent })
+  } catch (error) {
+    handle.terminate()
+    throw error
+  }
+  void handle.quiescent.then(release).catch(() => {})
+  return handle
+}
+
+/**
+ * Allocate an interactive backend terminal on a previously authorized route.
+ * Ownership precedes async allocation; removal cancels and awaits cleanup even
+ * when allocation fails. Browser detach must not terminate this backend handle.
+ * @param manager - Manager owning the mapped route and pending allocation.
+ * @param route - Previously authorized Remote SSH workspace route.
+ * @param spec - Remote argv, mapped cwd, PTY geometry and cancellation policy.
+ * @param ownExecution - Explicit narrower owner; defaults to shared manager route ownership.
+ * @returns A backend terminal retaining raw VT output and cleanup settlement.
+ */
+export async function spawnOwnedRemoteTerminal(manager: RemoteSshManager, route: RemoteWorkspaceRoute, spec: SubprocessTerminalSpawnSpec, ownExecution: (execution: Parameters<RemoteSshManager['ownExecution']>[1]) => () => void = execution => manager.ownExecution(route, execution)): Promise<RemoteAhpTerminalHandle> {
+  const controller = new AbortController()
+  const signal = spec.signal ? AbortSignal.any([spec.signal, controller.signal]) : controller.signal
+  let quiescent: Promise<void> = Promise.resolve()
+  const allocation = Promise.resolve().then(async () => {
+    signal.throwIfAborted()
+    const workspace = await manager.workspaceContext(route)
+    signal.throwIfAborted()
+    return RemoteAhpTerminalHandle.create(route, workspace, { ...spec, signal }, cleanup => { quiescent = cleanup })
+  })
+  const execution = {
+    terminate: () => { controller.abort(new Error('Remote workspace terminal removed')); return allocation.then(handle => handle.terminate(), () => {}) },
+    // Allocation failure does not imply unknown cleanup; the allocator reports it separately.
+    done: allocation.then(() => quiescent, () => quiescent),
+  }
+  void execution.done.catch(() => {})
+  let release: () => void
+  try {
+    release = ownExecution(execution)
+  } catch (error) {
+    controller.abort(error)
+    throw error
+  }
+  void execution.done.then(release).catch(() => {})
+  const handle = await allocation
+  void handle.done.catch(() => {})
+  return handle
 }
 
 /**
@@ -155,6 +207,9 @@ class RemoteAhpProcessHandle implements SubprocessHandle {
   readonly stderr: Readable | undefined
   readonly collected: SubprocessCollectedOutputs
   readonly done: Promise<SubprocessOutcome>
+  /** Whether both byte streams reached EOF rather than the bounded drain deadline. */
+  readonly outputComplete: Promise<boolean>
+  private readonly completeness = Promise.withResolvers<boolean>()
   /** Authoritative command/helper shutdown and settlement of owned resource operations. */
   readonly quiescent: Promise<void>
 
@@ -175,6 +230,7 @@ class RemoteAhpProcessHandle implements SubprocessHandle {
   ) {
     this.quiescent = this.cleanup.promise
     void this.quiescent.catch(() => {})
+    this.outputComplete = this.completeness.promise
     this.stdoutSink = new RemoteOutputSink(spec.stdio.stdout, process.stdout, 'stdout', transport.outputChunkBytes)
     this.stderrSink = new RemoteOutputSink(spec.stdio.stderr, process.stderr, 'stderr', transport.outputChunkBytes)
     this.stdout = this.stdoutSink.stream
@@ -188,12 +244,13 @@ class RemoteAhpProcessHandle implements SubprocessHandle {
     const onAbort = () => { this.controller.abort(spec.signal?.reason) }
     if (spec.signal?.aborted) onAbort()
     else spec.signal?.addEventListener('abort', onAbort, { once: true })
-    this.done = this.execute().catch(error => {
+    this.done = Promise.resolve().then(() => this.execute()).catch(error => {
       this.stdinPipe?.fail(error)
       throw error
     }).finally(() => {
       try {
         this.settled = true
+        this.completeness.resolve(false)
         this.stdinPipe?.finishRemote()
         spec.signal?.removeEventListener('abort', onAbort)
         this.stdoutSink.end()
@@ -248,7 +305,7 @@ class RemoteAhpProcessHandle implements SubprocessHandle {
     let allocation: Promise<RemoteShellExecution> | undefined
     const shellAllocations: Promise<RemoteShellExecution>[] = []
     let run: Promise<import('@deepseek-ai/dsh-shell').ShellRunResult> | undefined
-    let drains: Promise<boolean>[] | undefined
+    let drains: Promise<RemoteDrainOutcome>[] | undefined
     let completed = false
     let transportFailure: unknown
     const execute = (command: string, longLived = false) => {
@@ -301,9 +358,10 @@ class RemoteAhpProcessHandle implements SubprocessHandle {
       }
       const [result, drained] = await Promise.all([run, Promise.all(drains)])
       if (transportFailure !== undefined) throw transportFailure
-      if (result.signal === null && !this.controller.signal.aborted && drained.some(value => !value)) {
+      if (result.signal === null && !this.controller.signal.aborted && drained.some(value => value === 'cancelled')) {
         throw new Error('dsh-remote-ssh: output transport ended before stdout/stderr EOF')
       }
+      this.completeness.resolve(drained.every(value => value === 'eof'))
       return { exitCode: result.exitCode, signal: result.signal }
     } catch (error) {
       const wasCancelled = this.controller.signal.aborted && transportFailure === undefined
@@ -365,28 +423,29 @@ class RemoteAhpProcessHandle implements SubprocessHandle {
     }
   }
 
-  private async drain(client: AhpClient, directoryUri: string, name: string, sink: RemoteOutputSink, completed: () => boolean): Promise<boolean> {
+  private async drain(client: AhpClient, directoryUri: string, name: string, sink: RemoteOutputSink, completed: () => boolean): Promise<RemoteDrainOutcome> {
     const uri = `${directoryUri}/${name}.chunk`
     while (!this.controller.signal.aborted) {
       const listed = await client.resourceList({ uri: directoryUri })
-      if (this.controller.signal.aborted) return false
+      if (this.controller.signal.aborted) return 'cancelled'
       if (listed.entries.some(entry => entry.name === `${name}.chunk`)) {
         const chunk = await readRemoteOutput(client, uri)
         if (chunk.length > this.transport.outputChunkBytes) throw new Error('dsh-remote-ssh: output slot exceeds configured byte limit')
-        if (this.controller.signal.aborted) return false
+        if (this.controller.signal.aborted) return 'cancelled'
         if (chunk.length > 0) await sink.append(chunk, this.controller.signal)
-        if (this.controller.signal.aborted) return false
+        if (this.controller.signal.aborted) return 'cancelled'
         await client.resourceDelete({ uri, recursive: false })
-        if (chunk.length === 0) return true
+        if (chunk.length === 0) return 'eof'
       } else if (completed()) {
         // The transport script bounds post-exit draining. Re-list once: the earlier
         // snapshot can predate both the final chunk and the expiry marker.
         const settled = await client.resourceList({ uri: directoryUri })
         if (settled.entries.some(entry => entry.name === `${name}.chunk`)) continue
-        return settled.entries.some(entry => entry.name === 'drain-expired')
+        if (settled.entries.some(entry => entry.name === 'drain-expired')) return 'bounded'
+        throw new Error('dsh-remote-ssh: output transport ended before stdout/stderr EOF')
       } else await delay(this.transport.outputPollMs, this.controller.signal)
     }
-    return false
+    return 'cancelled'
   }
 }
 
@@ -400,6 +459,7 @@ class RemoteAhpTerminalHandle implements SubprocessTerminalHandle {
   private readonly cleanup = Promise.withResolvers<void>()
   private cleanupFailure: Error | undefined
   private exited = false
+  private active = true
 
   private stopping: ((signal: NodeJS.Signals) => void) | undefined
   private readonly stopped = new Promise<NodeJS.Signals>(resolvePromise => { this.stopping = resolvePromise })
@@ -409,6 +469,7 @@ class RemoteAhpTerminalHandle implements SubprocessTerminalHandle {
     private readonly client: AhpClient,
     private readonly channel: string,
     private readonly subscription: Subscription,
+    private readonly snapshot: Snapshot | undefined,
   ) {
     this.quiescent = this.cleanup.promise
     void this.quiescent.catch(() => {})
@@ -430,6 +491,7 @@ class RemoteAhpTerminalHandle implements SubprocessTerminalHandle {
     observeCleanup?.(cleanup.promise)
     let client: AhpClient | undefined
     let attempted = false
+    let subscriptionAttempted = false
     let handle: RemoteAhpTerminalHandle | undefined
     const channel = `ahp-terminal:/${randomUUID()}`
     try {
@@ -445,8 +507,9 @@ class RemoteAhpTerminalHandle implements SubprocessTerminalHandle {
       attempted = true
       await client.request('createTerminal', params)
       spec.signal?.throwIfAborted()
+      subscriptionAttempted = true
       const subscribed = await client.subscribe(channel)
-      const terminal = new RemoteAhpTerminalHandle(client, channel, subscribed.subscription)
+      const terminal = new RemoteAhpTerminalHandle(client, channel, subscribed.subscription, subscribed.result.snapshot)
       handle = terminal
       void terminal.quiescent.then(cleanup.resolve, cleanup.reject)
       spec.signal?.throwIfAborted()
@@ -455,14 +518,19 @@ class RemoteAhpTerminalHandle implements SubprocessTerminalHandle {
         spec.signal.addEventListener('abort', onAbort, { once: true })
         void terminal.quiescent.finally(() => { spec.signal?.removeEventListener('abort', onAbort) }).catch(() => {})
       }
-      client.dispatch(channel, { type: ActionType.TerminalInput, data: `${buildRemoteInteractiveCommand(spec.argv, spec.env)}\r` })
+      if (!terminal.exited) client.dispatch(channel, { type: ActionType.TerminalInput, data: `${buildRemoteInteractiveCommand(spec.argv, spec.env)}\r` })
       return terminal
     } catch (error) {
       if (handle !== undefined) {
         await handle.terminate()
       } else if (client !== undefined && attempted) {
         try {
-          await client.request('disposeTerminal', { channel })
+          const settled = await Promise.allSettled([
+            client.request('disposeTerminal', { channel }),
+            ...(subscriptionAttempted ? [client.unsubscribe(channel)] : []),
+          ])
+          const failure = settled.find(result => result.status === 'rejected')
+          if (failure?.status === 'rejected') throw failure.reason
         } catch (failure) {
           const unknown = new Error('dsh-remote-ssh: terminal allocation cleanup unobservable at ' + channel, { cause: failure })
           cleanup.reject(unknown)
@@ -474,10 +542,12 @@ class RemoteAhpTerminalHandle implements SubprocessTerminalHandle {
     }
   }
   async write(data: string): Promise<void> {
+    if (!this.active) throw new Error('dsh-remote-ssh: remote terminal is closed')
     this.client.dispatch(this.channel, { type: ActionType.TerminalInput, data })
   }
 
   async resize(cols: number, rows: number): Promise<void> {
+    if (!this.active) throw new Error('dsh-remote-ssh: remote terminal is closed')
     this.client.dispatch(this.channel, { type: ActionType.TerminalResized, cols, rows })
   }
 
@@ -512,7 +582,16 @@ class RemoteAhpTerminalHandle implements SubprocessTerminalHandle {
   }
 
   private async pump(): Promise<SubprocessOutcome> {
+    let serverSeq = this.snapshot?.fromSeq
     try {
+      const state = this.snapshot?.state
+      if (state !== undefined && 'content' in state && 'claim' in state && 'lifecycle' in state) {
+        for (const part of state.content) this.output.write(part.type === 'command' ? part.output : part.value)
+        if (state.lifecycle.status === 'exited') {
+          this.exited = true
+          return { exitCode: state.lifecycle.exitCode ?? null, signal: state.lifecycle.exitCode === undefined ? 'SIGTERM' : null }
+        }
+      }
       for (;;) {
         const next = await Promise.race([
           this.subscription.next().then(result => ({ kind: 'event' as const, result })),
@@ -522,6 +601,8 @@ class RemoteAhpTerminalHandle implements SubprocessTerminalHandle {
         if (next.result.done) throw new Error('dsh-remote-ssh: AHP terminal subscription ended before terminal exit')
         const event = next.result.value
         if (event.type !== 'action') continue
+        if (serverSeq !== undefined && event.params.serverSeq <= serverSeq) continue
+        serverSeq = event.params.serverSeq
         const action = event.params.action
         if (action.type === ActionType.TerminalData) this.output.write(action.data)
         else if (action.type === ActionType.TerminalExited) {
@@ -530,11 +611,18 @@ class RemoteAhpTerminalHandle implements SubprocessTerminalHandle {
         }
       }
     } finally {
+      this.active = false
       this.output.end()
       const cleanup = await Promise.allSettled([
         this.subscription.close(),
         this.client.request('disposeTerminal', { channel: this.channel }),
+        Promise.resolve().then(() => this.client.unsubscribe(this.channel)),
       ])
+      const unsubscribe = cleanup[2]!
+      if (unsubscribe.status === 'rejected') {
+        this.cleanupFailure = new Error('dsh-remote-ssh: terminal unsubscribe unobservable at ' + this.channel, { cause: unsubscribe.reason })
+        throw this.cleanupFailure
+      }
       const disposal = cleanup[1]!
       if (disposal.status === 'rejected' && !this.exited) {
         this.cleanupFailure = new Error('dsh-remote-ssh: terminal cleanup unobservable at ' + this.channel, { cause: disposal.reason })

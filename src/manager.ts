@@ -1,12 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { mkdir, realpath } from 'node:fs/promises'
+import { access, mkdir, realpath, stat } from 'node:fs/promises'
+import { constants } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { posix } from 'node:path'
 import { Context, Service, type Volatile } from '@deepseek-ai/cordis'
 import type { FileSystem } from '@deepseek-ai/dsh-fs'
-import type { ShellExecutor } from '@deepseek-ai/dsh-shell'
 import type {} from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-workspace'
 import type { WorkspaceRegistry } from '@deepseek-ai/dsh-workspace'
@@ -15,6 +15,8 @@ import RemoteSshFileSystem from './fs.ts'
 import RemoteSshRuntime, { fileUriFromPosixPath, posixPathFromFileUri, WorkspacePathMapper } from './index.ts'
 import RemoteSshShellExecutor from './shell.ts'
 import { DSH_AHP_PROTOCOL_VERSIONS, validateProtocolVersions } from './ahp-compat.ts'
+import type { PreferencesState, SavePreferencesRequest } from './management-types.ts'
+import { RemoteSshManagementError } from './management-error.ts'
 
 /** One SSH destination visible in Settings and workspace selection. */
 export interface RemoteSshServer {
@@ -199,6 +201,12 @@ export class RemoteSshManager extends Service {
   private workspaceRegistry: WorkspaceRegistry | undefined
   private refreshTail: Promise<void> = Promise.resolve()
   private readonly initialRefresh: Promise<void>
+  private readonly preferencesInstance = randomUUID()
+  private preferencesChanging = false
+  private applicationUnconfirmed = false
+  private diagnosticActivities = 0
+  private connectionUses = 0
+  private published = false
 
   constructor(ctx: Context, config: Volatile<Config>) {
     super(ctx, 'remoteSshManager')
@@ -245,6 +253,99 @@ export class RemoteSshManager extends Service {
   /** Current detached catalog snapshot. */
   snapshot(): ResolvedConfig {
     return structuredClone(this.current)
+  }
+
+  /** Read persisted preferences and whether the running manager has applied them.
+   * @returns Detached state with an opaque revision and activity counts.
+   */
+  preferencesState(): PreferencesState {
+    const persisted = this.liveConfig.get() as ResolvedConfig
+    const descriptor = this.ctx.settings.describe().find(row => row.ns === SETTINGS_ENTRY_ID)
+    if (!descriptor) throw new RemoteSshManagementError('settings_unavailable', 503, 'Remote SSH settings are unavailable')
+    const revision = createHash('sha256').update(JSON.stringify([this.preferencesInstance, descriptor.revision, persisted])).digest('hex')
+    return {
+      revision, sshConfigFile: persisted.sshConfigFile ?? '', openFileMode: persisted.openFileMode,
+      openFileEditorPath: persisted.openFileEditorPath ?? '', platform: process.platform,
+      activeExecutions: this.connectionUses + this.diagnosticActivities + [...this.executions.values()].reduce((sum, entries) => sum + entries.size, 0),
+      connectionCount: this.hosts.size,
+      applicationState: this.applicationUnconfirmed || JSON.stringify(persisted) !== JSON.stringify(this.current) ? 'unconfirmed' : 'applied',
+    }
+  }
+
+  /** Validate and save user preferences without terminating active workspace execution.
+   * @param input - Draft fields and the revision read before editing.
+   * @returns Applied preferences; uncertain persistence/application rejects and requires a fresh read.
+   */
+  savePreferences(input: SavePreferencesRequest): Promise<PreferencesState> {
+    return this.mutation(async () => {
+      await this.refreshTail
+      const before = this.preferencesState()
+      if (input.expectedRevision !== before.revision) throw new RemoteSshManagementError('settings_conflict', 409, 'Settings changed; reload before saving')
+      if (before.applicationState !== 'applied') throw new RemoteSshManagementError('settings_apply_unconfirmed', 503, 'Settings application is unconfirmed; restart or repair the manager before saving')
+      const sshConfigFile = input.sshConfigFile.trim()
+      const openFileEditorPath = input.openFileEditorPath.trim()
+      await validatePreferencePath(sshConfigFile, false)
+      if (input.openFileMode === 'custom') {
+        if (!openFileEditorPath) throw new RemoteSshManagementError('settings_invalid_path', 400, 'Select an absolute editor executable path')
+        await validatePreferencePath(openFileEditorPath, true)
+      } else if (openFileEditorPath && !isAbsolute(openFileEditorPath)) {
+        throw new RemoteSshManagementError('settings_invalid_path', 400, 'Editor path must be absolute')
+      }
+      const latest = this.preferencesState()
+      if (latest.revision !== before.revision) throw new RemoteSshManagementError('settings_conflict', 409, 'Settings changed during validation; reload before saving')
+      const connectionChanged = sshConfigFile !== before.sshConfigFile
+      if (connectionChanged && latest.activeExecutions > 0) throw new RemoteSshManagementError('settings_busy', 409, 'Finish active remote tasks and terminals before changing SSH configuration')
+      if (connectionChanged && latest.connectionCount > 0 && !input.confirmConnectionReset) throw new RemoteSshManagementError('settings_confirmation_required', 409, 'Confirm release of existing SSH connections')
+      const next = this.snapshot()
+      if (sshConfigFile) next.sshConfigFile = sshConfigFile
+      else delete next.sshConfigFile
+      next.openFileMode = input.openFileMode
+      if (openFileEditorPath) next.openFileEditorPath = openFileEditorPath
+      else delete next.openFileEditorPath
+      this.validate(next)
+      this.preferencesChanging = connectionChanged
+      try {
+        await this.replaceSettings(next)
+        const applied = this.preferencesState()
+        if (applied.applicationState !== 'applied') throw new RemoteSshManagementError('settings_apply_unconfirmed', 503, 'Saved settings have not been applied')
+        return applied
+      } catch (error) {
+        // The settings provider may fail after an atomic disk write or failed rollback;
+        // an unchanged in-memory revision cannot establish that nothing was persisted.
+        this.applicationUnconfirmed = true
+        throw new RemoteSshManagementError('settings_apply_unconfirmed', 503, 'Settings may have been saved but application did not complete; reload to inspect', { cause: error })
+      } finally { this.preferencesChanging = false }
+    })
+  }
+
+  /** Reserve a shared remote connection until an in-flight filesystem operation settles.
+   * @returns Idempotent release function. Configuration switching rejects admission synchronously.
+   */
+  ownConnectionUse(): () => void {
+    this.assertPreferencesReady()
+    this.connectionUses += 1
+    let released = false
+    return () => { if (!released) { released = true; this.connectionUses -= 1 } }
+  }
+
+  /** Hold the connection policy stable for one diagnostic, without owning a workspace connection.
+   * @param revision - Preferences revision selected by the caller.
+   * @returns Idempotent release function, called after diagnostic cleanup.
+   */
+  ownDiagnostic(revision: string): () => void {
+    this.assertPreferencesReady()
+    const state = this.preferencesState()
+    if (state.applicationState !== 'applied') throw new RemoteSshManagementError('settings_apply_unconfirmed', 503, 'Configuration has not been applied')
+    if (state.revision !== revision) throw new RemoteSshManagementError('settings_conflict', 409, 'Settings changed; reload before diagnosing')
+    this.diagnosticActivities += 1
+    let released = false
+    return () => { if (!released) { released = true; this.diagnosticActivities -= 1 } }
+  }
+
+  private assertPreferencesReady(): void {
+    if (this.preferencesChanging || this.applicationUnconfirmed) {
+      throw new RemoteSshManagementError('settings_apply_unconfirmed', 503, 'Remote SSH configuration is changing or its application is unconfirmed')
+    }
   }
 
   /** Select one custom OpenSSH config, or restore the platform defaults. */
@@ -401,7 +502,7 @@ export class RemoteSshManager extends Service {
    * @returns The release callback, invoked only after settlement.
    */
   ownExecution(route: RemoteWorkspaceRoute, execution: { terminate(): void | Promise<void>; done: Promise<unknown> }): () => void {
-    if (this.retiring.has(route.workspace.id) || !this.routeByWorkspaceId.has(route.workspace.id)) {
+    if (this.preferencesChanging || this.applicationUnconfirmed || this.retiring.has(route.workspace.id) || !this.routeByWorkspaceId.has(route.workspace.id)) {
       void Promise.resolve(execution.terminate()).catch(error => this.ctx.logger.warn(String(error)))
       throw new Error('Remote workspace is being removed')
     }
@@ -497,11 +598,12 @@ export class RemoteSshManager extends Service {
     return bound.workspaceId === null ? { kind: 'local' } : this.workspace(bound.workspaceId)
   }
 
-  /** Resolve shell calls using their durable session world before considering workdir text. */
+  /** Resolve session-owned calls in their bound world; unbound session ids reject without path fallback. */
   routeShell(workdir: string, sessionId?: string): ExecutionRoute {
-    const bound = sessionId === undefined ? undefined : this.sessionRoute(sessionId)
-    if (bound !== undefined) return bound
-    return this.route(undefined, workdir)
+    if (sessionId === undefined) return this.route(undefined, workdir)
+    const bound = this.sessionRoute(sessionId)
+    if (bound === undefined) throw new Error(`dsh-remote-ssh: no execution world is bound to session '${sessionId}'`)
+    return bound
   }
 
   /** Model-facing shell dialect for a workspace cwd. Remote workspaces are POSIX today. */
@@ -532,6 +634,7 @@ export class RemoteSshManager extends Service {
   workspace(id: string): RemoteWorkspaceRoute {
     const route = this.routeByWorkspaceId.get(id)
     if (route === undefined || this.retiring.has(id)) throw new Error(`dsh-remote-ssh: unknown or removed remote workspace '${id}'`)
+    this.assertPreferencesReady()
     return route
   }
 
@@ -571,13 +674,21 @@ export class RemoteSshManager extends Service {
 
   private queueRefresh(config: ResolvedConfig): Promise<void> {
     const run = this.refreshTail.then(() => this.publish(config))
-    this.refreshTail = run.then(() => {}, () => {})
+    this.refreshTail = run.then(() => {}, () => { this.applicationUnconfirmed = true })
     return run
   }
 
   private async publish(config: ResolvedConfig): Promise<void> {
     this.validate(config)
     const policyChanged = connectionPolicyKey(this.current) !== connectionPolicyKey(config)
+    if (this.published && !policyChanged && this.current.aliasRoot === config.aliasRoot
+      && JSON.stringify(this.current.servers) === JSON.stringify(config.servers)
+      && JSON.stringify(this.current.workspaces) === JSON.stringify(config.workspaces)
+      && JSON.stringify(this.current.retiredAliases) === JSON.stringify(config.retiredAliases)) {
+      this.current = structuredClone(config)
+      this.applicationUnconfirmed = false
+      return
+    }
     await mkdir(resolve(tmpdir(), 'dsh-ssh'), { recursive: true })
     for (const alias of config.retiredAliases) this.remoteAliases.add(normalizeLocal(resolve(alias)))
     const servers = new Map(config.servers.map(server => [server.id, server]))
@@ -598,7 +709,7 @@ export class RemoteSshManager extends Service {
       this.remoteAliases.add(normalizeLocal(aliasPath))
       this.remoteAliases.add(normalizeLocal(canonicalAlias))
     }
-    const removedIds = [...this.routeByWorkspaceId.keys()].filter(id => !nextById.has(id) || routeRuntimeKey(this.routeByWorkspaceId.get(id)!) !== routeRuntimeKey(nextById.get(id)!))
+    const removedIds = [...this.routeByWorkspaceId.keys()].filter(id => policyChanged || !nextById.has(id) || routeRuntimeKey(this.routeByWorkspaceId.get(id)!) !== routeRuntimeKey(nextById.get(id)!))
     for (const id of removedIds) this.retiring.add(id)
     for (const id of removedIds) {
       const owned = [...this.executions.get(id) ?? []]
@@ -628,7 +739,7 @@ export class RemoteSshManager extends Service {
     for (const [id, pending] of this.hosts) {
       const next = servers.get(id)
       const settled = await Promise.resolve(pending).catch(() => undefined)
-      if (policyChanged || next === undefined || settled === undefined || settled.key !== serverRuntimeKey(next)) {
+      if (policyChanged || next === undefined || settled === undefined || settled.key !== hostRuntimeKey(next, config)) {
         if (settled !== undefined) await this.disposeHost(settled)
         this.hosts.delete(id)
       }
@@ -640,6 +751,8 @@ export class RemoteSshManager extends Service {
     this.current = structuredClone(config)
     for (const id of removedIds) this.retiring.delete(id)
     await this.registerAllWorkspaces()
+    this.published = true
+    this.applicationUnconfirmed = false
   }
 
   private async registerAllWorkspaces(): Promise<void> {
@@ -715,6 +828,7 @@ export class RemoteSshManager extends Service {
   }
 
   private async hostContext(server: RemoteSshServer): Promise<RemoteHostContext> {
+    this.assertPreferencesReady()
     let pending = this.hosts.get(server.id)
     if (pending === undefined) {
       pending = this.createHostContext(server)
@@ -731,6 +845,7 @@ export class RemoteSshManager extends Service {
     const child = new Context()
     try {
       child.provide('remoteSsh', host.remote)
+      child.provide('remoteSshManager', this)
       await child.plugin(RemoteSshShellExecutor, {
         localWorkspace: route.aliasPath,
         remoteWorkspace: route.workspace.remotePath,
@@ -759,30 +874,33 @@ export class RemoteSshManager extends Service {
         shutdownTimeoutMs: policy.shutdownTimeoutMs,
         protocolVersions: policy.protocolVersions,
       })
-      return { ctx: child, remote: child.remoteSsh, key: serverRuntimeKey(server), server, transport }
+      return { ctx: child, remote: child.remoteSsh, key: hostRuntimeKey(server, policy), server, transport }
     } catch (error) {
       await child.fiber.dispose().catch(() => {})
       throw error
     }
   }
 
-  private transportFor(server: RemoteSshServer): RemoteSshTransport {
+  /** Shared runtime/probe transport; a selected manager config is the sole -F authority. */
+  transportFor(server: RemoteSshServer, purpose: 'runtime' | 'probe' = 'runtime'): RemoteSshTransport {
+    assertSshConfigAuthority(this.current.sshConfigFile, server.sshArgs ?? [])
     const executable = server.sshExecutable ?? 'ssh'
     // Neither Windows OpenSSH nor Git-for-Windows honours ControlMaster; both
     // accepted the syntax in local probes and then reset every session.
-    const multiplexed = process.platform !== 'win32'
+    const multiplexed = purpose === 'runtime' && process.platform !== 'win32'
     const args = [
       // No interactive prompt is possible on any of these channels, so a failed
       // authentication must fail fast instead of waiting for input that never comes.
       '-o', 'BatchMode=yes',
-      '-o', `ConnectTimeout=${Math.ceil(this.current.connectTimeoutMs / 1000)}`,
+      '-o', `ConnectTimeout=${purpose === 'probe' ? 5 : Math.ceil(this.current.connectTimeoutMs / 1000)}`,
+      ...(this.current.sshConfigFile === undefined ? [] : ['-F', resolve(this.current.sshConfigFile)]),
       ...(server.sshArgs ?? []),
     ]
     if (multiplexed) {
       // Include the local process id: a crashed/closed DSH instance may leave a
       // short-lived ControlPersist socket, and a new instance must never bind
       // to that stale master. All workspaces in this process still share it.
-      const digest = createHash('sha256').update(`${process.pid}:${serverRuntimeKey(server)}`).digest('hex').slice(0, 16)
+      const digest = createHash('sha256').update(`${process.pid}:${serverRuntimeKey(server)}:${connectionPolicyKey(this.current)}`).digest('hex').slice(0, 16)
       const controlPath = resolve(tmpdir(), 'dsh-ssh', digest).replaceAll('\\', '/')
       args.push('-o', 'ControlMaster=auto', '-o', 'ControlPersist=60', '-o', `ControlPath=${controlPath}`)
     }
@@ -819,6 +937,7 @@ export class RemoteSshManager extends Service {
       if (!ID_PATTERN.test(server.id) || serverIds.has(server.id)) throw new Error(`dsh-remote-ssh: invalid or duplicate server id '${server.id}'`)
       if (server.label.trim().length === 0 || server.sshTarget.trim().length === 0) throw new Error(`dsh-remote-ssh: server '${server.id}' requires label and sshTarget`)
       if (server.sshExecutable !== undefined && server.sshExecutable.trim().length === 0) throw new Error(`dsh-remote-ssh: server '${server.id}' sshExecutable must be non-empty`)
+      assertSshConfigAuthority(config.sshConfigFile, server.sshArgs ?? [])
       serverIds.add(server.id)
     }
     const workspaceIds = new Set<string>()
@@ -839,7 +958,42 @@ export class RemoteSshManager extends Service {
 }
 
 function connectionPolicyKey(config: ResolvedConfig): string {
-  return JSON.stringify([config.protocolVersions, config.startupTimeoutMs, config.requestTimeoutMs, config.shutdownTimeoutMs, config.connectTimeoutMs])
+  return JSON.stringify([config.sshConfigFile ?? null, config.protocolVersions, config.startupTimeoutMs, config.requestTimeoutMs, config.shutdownTimeoutMs, config.connectTimeoutMs])
+}
+
+function hostRuntimeKey(server: RemoteSshServer, config: ResolvedConfig): string {
+  return JSON.stringify([serverRuntimeKey(server), connectionPolicyKey(config)])
+}
+
+/** Recognize split, attached and grouped OpenSSH -F without inspecting option values. */
+function assertSshConfigAuthority(configFile: string | undefined, args: readonly string[]): void {
+  if (configFile === undefined) return
+  const takesValue = 'BbcDEeFIiJLlmOoPpQRSWw'
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!
+    if (arg === '--') break
+    if (!arg.startsWith('-')) continue
+    for (let offset = 1; offset < arg.length; offset += 1) {
+      const option = arg[offset]!
+      if (option === 'F') throw new Error('dsh-remote-ssh: sshConfigFile conflicts with server sshArgs -F; remove the server override')
+      if (takesValue.includes(option)) {
+        if (offset === arg.length - 1) index += 1
+        break
+      }
+    }
+  }
+}
+
+async function validatePreferencePath(path: string, executable: boolean): Promise<void> {
+  if (!path) return
+  if (!isAbsolute(path) || path.includes('\0')) throw new RemoteSshManagementError('settings_invalid_path', 400, 'Select an absolute local file path')
+  try {
+    if (!(await stat(path)).isFile()) throw new Error('not a file')
+    await access(path, executable && process.platform !== 'win32' ? constants.X_OK : constants.R_OK)
+    if (executable && process.platform === 'win32' && !/\.(exe|cmd|bat)$/i.test(path)) throw new Error('not a Windows executable')
+  } catch (error) {
+    throw new RemoteSshManagementError('settings_invalid_path', 400, 'Selected file is unavailable or cannot be used', { cause: error })
+  }
 }
 
 function serverRuntimeKey(server: RemoteSshServer): string {

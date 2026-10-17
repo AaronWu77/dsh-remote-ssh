@@ -6,8 +6,10 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { RemoteOpenFileMode, RemoteSshManager, RemoteSshServer } from './manager.ts'
 import { openRemoteFile } from './open-file.ts'
 import z from '@deepseek-ai/schemastery'
-import { AgentHostConnectionError, formatConnectionDiagnostic } from './connection-error.ts'
+import { AgentHostConnectionError, SshExecutionError, formatConnectionDiagnostic } from './connection-error.ts'
 import { appendSshHost, defaultSshConfigFiles, discoverSshConfigHosts } from './ssh-config.ts'
+import { RemoteSshDiagnostics, parseDiagnosticId, parseDiagnosticRequest } from './diagnostics.ts'
+import { RemoteSshManagementError } from './management-error.ts'
 
 export const REMOTE_SSH_STATE_PATH = '/plugins/dsh-remote-ssh/state'
 export const REMOTE_SSH_SERVER_PATH = '/plugins/dsh-remote-ssh/server'
@@ -20,13 +22,48 @@ export const REMOTE_SSH_CONFIG_HOST_PATH = '/plugins/dsh-remote-ssh/ssh-config/h
 export const REMOTE_SSH_SETTINGS_PATH = '/plugins/dsh-remote-ssh/settings'
 export const REMOTE_SSH_DIRECTORY_PATH = '/plugins/dsh-remote-ssh/directory'
 export const REMOTE_SSH_OPEN_FILE_PATH = '/plugins/dsh-remote-ssh/open-file'
+export const REMOTE_SSH_DIAGNOSTIC_START_PATH = '/plugins/dsh-remote-ssh/diagnostics/start'
+export const REMOTE_SSH_DIAGNOSTIC_STATUS_PATH = '/plugins/dsh-remote-ssh/diagnostics/status'
+export const REMOTE_SSH_DIAGNOSTIC_CANCEL_PATH = '/plugins/dsh-remote-ssh/diagnostics/cancel'
 
 export const name = 'dsh-remote-ssh-web'
 export const inject = ['remoteSshManager']
 
 /** Maximum number of diagnostic characters returned by the Web endpoints. */
-export const Config = z.object({ maxErrorCharacters: z.number().default(16_384) })
-interface WebConfig { maxErrorCharacters: number }
+export const Config = z.object({
+  maxErrorCharacters: z.number().default(16_384),
+  diagnosticTimeoutMs: z.number().default(120_000),
+  diagnosticTerminalTimeoutMs: z.number().default(15_000),
+  diagnosticLeaseMs: z.number().default(45_000),
+  diagnosticRetentionMs: z.number().default(600_000),
+  diagnosticMaxConcurrent: z.number().default(2),
+  diagnosticMaxRetained: z.number().default(20),
+})
+interface WebConfig {
+  maxErrorCharacters: number
+  diagnosticTimeoutMs?: number
+  diagnosticTerminalTimeoutMs?: number
+  diagnosticLeaseMs?: number
+  diagnosticRetentionMs?: number
+  diagnosticMaxConcurrent?: number
+  diagnosticMaxRetained?: number
+}
+
+function resolveDiagnosticPolicy(config: WebConfig) {
+  const policy = {
+    timeoutMs: config.diagnosticTimeoutMs ?? 120_000,
+    terminalTimeoutMs: config.diagnosticTerminalTimeoutMs ?? 15_000,
+    leaseMs: config.diagnosticLeaseMs ?? 45_000,
+    retentionMs: config.diagnosticRetentionMs ?? 600_000,
+    maxConcurrent: config.diagnosticMaxConcurrent ?? 2,
+    maxRetained: config.diagnosticMaxRetained ?? 20,
+  }
+  for (const [key, value] of Object.entries(policy)) {
+    if (!Number.isSafeInteger(value) || value <= 0) throw new Error('dsh-remote-ssh/web: diagnostic ' + key + ' must be a positive integer')
+  }
+  if (policy.maxRetained < policy.maxConcurrent) throw new Error('dsh-remote-ssh/web: diagnostic retention must cover all concurrent tasks')
+  return policy
+}
 
 /**
  * The composition's browser-trust fence (`ctx.connection`, owned by
@@ -43,6 +80,7 @@ interface ConnectionFence {
 /** Activate the Web surface only in compositions that provide a Web host and its trust fence. */
 export function apply(ctx: Context, config: WebConfig): void {
   if (!Number.isSafeInteger(config.maxErrorCharacters) || config.maxErrorCharacters <= 0) throw new Error('dsh-remote-ssh/web: maxErrorCharacters must be a positive integer')
+  resolveDiagnosticPolicy(config)
   ctx.inject(['webServer', 'connection'], ctx => registerWebRoutes(ctx, config))
 }
 
@@ -50,27 +88,40 @@ export function apply(ctx: Context, config: WebConfig): void {
 function registerWebRoutes(ctx: Context, config: WebConfig): void {
   const fence = ctx.get('connection') as ConnectionFence | undefined
   if (fence === undefined) throw new Error('dsh-remote-ssh/web: the composition browser-trust fence is unavailable')
-  const route = (ctx: Context, path: string, method: string, handler: (req: IncomingMessage, res: ServerResponse) => Promise<void>): (() => void) => registerRoute(ctx, path, method, handler, config.maxErrorCharacters, fence)
+  const diagnostics = new RemoteSshDiagnostics(ctx.remoteSshManager, resolveDiagnosticPolicy(config))
+  const route = (ctx: Context, path: string, method: string | readonly string[], handler: (req: IncomingMessage, res: ServerResponse) => Promise<void>): (() => void) => registerRoute(ctx, path, method, handler, config.maxErrorCharacters, fence)
   const routes = [
+    route(ctx, REMOTE_SSH_DIAGNOSTIC_START_PATH, 'POST', async (req, res) => {
+      const input = parseDiagnosticRequest(await readJson(req))
+      const server = await resolveAvailableServer(ctx.remoteSshManager, input.serverId)
+      json(res, 202, diagnostics.start(input, server))
+    }),
+    route(ctx, REMOTE_SSH_DIAGNOSTIC_STATUS_PATH, 'POST', async (req, res) => {
+      json(res, 200, diagnostics.status(parseDiagnosticId((await readJson(req)).id)))
+    }),
+    route(ctx, REMOTE_SSH_DIAGNOSTIC_CANCEL_PATH, 'POST', async (req, res) => {
+      const report = diagnostics.cancel(parseDiagnosticId((await readJson(req)).id))
+      if (report) json(res, 200, report)
+      else { res.statusCode = 204; res.end() }
+    }),
     route(ctx, REMOTE_SSH_STATE_PATH, 'GET', async (_req, res) => {
       json(res, 200, await catalogState(ctx.remoteSshManager))
     }),
-    route(ctx, REMOTE_SSH_SETTINGS_PATH, 'POST', async (req, res) => {
+    route(ctx, REMOTE_SSH_SETTINGS_PATH, ['GET', 'POST'], async (req, res) => {
+      if (req.method === 'GET') { json(res, 200, ctx.remoteSshManager.preferencesState()); return }
       const body = await readJson(req)
       const sshConfigFile = optionalString(body, 'sshConfigFile')
       const openFileEditorPath = optionalString(body, 'openFileEditorPath')
       const openFileMode = body.openFileMode === undefined ? undefined : parseOpenFileMode(body.openFileMode)
-      await ctx.remoteSshManager.updateUserPreferences({
-        ...(sshConfigFile === undefined ? {} : { sshConfigFile }),
-        ...(openFileMode === undefined ? {} : { openFileMode }),
-        ...(openFileEditorPath === undefined ? {} : { openFileEditorPath }),
-      })
-      const snapshot = ctx.remoteSshManager.snapshot()
-      json(res, 200, {
-        sshConfigFile: snapshot.sshConfigFile,
-        openFileMode: snapshot.openFileMode,
-        openFileEditorPath: snapshot.openFileEditorPath,
-      })
+      const current = ctx.remoteSshManager.preferencesState()
+      const expectedRevision = requiredString(body, 'expectedRevision')
+      if (body.confirmConnectionReset !== undefined && typeof body.confirmConnectionReset !== 'boolean') throw new Error('confirmConnectionReset must be boolean')
+      json(res, 200, await ctx.remoteSshManager.savePreferences({
+        expectedRevision, sshConfigFile: sshConfigFile ?? current.sshConfigFile,
+        openFileMode: openFileMode ?? current.openFileMode,
+        openFileEditorPath: openFileEditorPath ?? current.openFileEditorPath,
+        confirmConnectionReset: body.confirmConnectionReset === true,
+      }))
     }),
     route(ctx, REMOTE_SSH_DIRECTORY_PATH, 'POST', async (req, res) => {
       const body = await readJson(req)
@@ -106,7 +157,8 @@ function registerWebRoutes(ctx: Context, config: WebConfig): void {
     route(ctx, REMOTE_SSH_PROBE_PATH, 'POST', async (req, res) => {
       const body = await readJson(req)
       const server = await resolveAvailableServer(ctx.remoteSshManager, requiredString(body, 'id'))
-      json(res, 200, await probeServer(server.sshExecutable ?? 'ssh', server.sshTarget, server.sshArgs ?? []))
+      const transport = ctx.remoteSshManager.transportFor(server, 'probe')
+      json(res, 200, await probeServer(transport.executable, server.sshTarget, transport.args))
     }),
     route(ctx, REMOTE_SSH_CONFIG_HOST_PATH, 'POST', async (req, res) => {
       const body = await readJson(req)
@@ -116,7 +168,7 @@ function registerWebRoutes(ctx: Context, config: WebConfig): void {
       json(res, 201, await appendSshHost(configPath, requiredString(body, 'command')))
     }),
   ]
-  ctx.effect(() => () => { for (const dispose of routes) dispose() }, 'Remote SSH Web routes')
+  ctx.effect(() => async () => { for (const dispose of routes) dispose(); await diagnostics.close() }, 'Remote SSH Web routes')
 }
 
 interface AvailableServer extends RemoteSshServer {
@@ -177,7 +229,7 @@ function samePath(left: string, right: string): boolean {
 function registerRoute(
   ctx: Context,
   path: string,
-  method: string,
+  method: string | readonly string[],
   handler: (req: IncomingMessage, res: ServerResponse) => Promise<void>,
   maxErrorCharacters: number,
   fence: ConnectionFence,
@@ -191,11 +243,11 @@ function registerRoute(
         res.end()
         return
       }
-      if (req.method !== method) return json(res, 405, { error: 'method not allowed' })
+      if (!(typeof method === 'string' ? req.method === method : method.includes(req.method ?? ''))) return json(res, 405, { error: 'method not allowed' })
       try {
         await handler(req, res)
       } catch (error: unknown) {
-        json(res, 400, { error: safeMessage(error, maxErrorCharacters), ...(error instanceof AgentHostConnectionError ? { code: error.code } : {}) })
+        json(res, error instanceof RemoteSshManagementError ? error.status : 400, { error: safeMessage(error, maxErrorCharacters), ...(error instanceof AgentHostConnectionError || error instanceof SshExecutionError || error instanceof RemoteSshManagementError ? { code: error.code } : {}) })
       }
     },
   })
@@ -254,7 +306,7 @@ async function probeServer(executable: string, sshTarget: string, sshArgs: strin
   error?: string
 }> {
   const command = 'printf "hostname=%s\\n" "$(hostname)"; for dsh_cmd in bash pwsh rg code; do if command -v "$dsh_cmd" >/dev/null 2>&1; then printf "%s=1\\n" "$dsh_cmd"; else printf "%s=0\\n" "$dsh_cmd"; fi; done'
-  const child = spawn(executable, [...sshArgs, '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', sshTarget, command], {
+  const child = spawn(executable, [...sshArgs, '-T', sshTarget, command], {
     windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
   })
   const stdout: Buffer[] = []

@@ -35,6 +35,27 @@ async function createContext(): Promise<Context> {
 }
 
 describe('RemoteSshManager', () => {
+  it('uses one selected custom config for runtime and probe without losing SSH options', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-ssh-transport-'))
+    const ctx = await createContext()
+    try {
+      await ctx.plugin(RemoteSshManager, { aliasRoot: root, sshConfigFile: join(root, 'custom config') })
+      const server = { id: 'alias', label: 'Alias', sshTarget: 'user@custom-only', sshArgs: ['-J', 'jump', '-i', 'identity', '-o', 'IdentitiesOnly=yes'] }
+      for (const purpose of ['runtime', 'probe'] as const) {
+        const transport = ctx.remoteSshManager.transportFor(server, purpose)
+        expect(transport.args.filter(arg => arg === '-F')).toHaveLength(1)
+        expect(transport.args[transport.args.indexOf('-F') + 1]).toBe(join(root, 'custom config'))
+        expect(transport.args).toEqual(expect.arrayContaining(server.sshArgs))
+        expect(transport.args).toContain(purpose === 'probe' ? 'ConnectTimeout=5' : 'ConnectTimeout=10')
+      }
+      for (const args of [['-F', 'other'], ['-Fother'], ['-vFother']]) {
+        expect(() => ctx.remoteSshManager.transportFor({ ...server, sshArgs: args })).toThrow('sshConfigFile conflicts')
+      }
+      await ctx.remoteSshManager.setSshConfigFile()
+      expect(ctx.remoteSshManager.transportFor(server).args).not.toContain('-F')
+    } finally { await ctx.fiber.dispose(); await rm(root, { recursive: true, force: true }) }
+  })
+
   it('reuses an existing server/root for repeated and concurrent workspace picks', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-remote-ssh-manager-'))
     const ctx = await createContext()
@@ -230,7 +251,8 @@ describe('RemoteSshManager', () => {
       expect(manager.routeShell('/outside', 'remote-session')).toMatchObject({ kind: 'remote' })
       manager.unbindSession('remote-session', owner)
       expect(manager.sessionRoute('remote-session')).toBeUndefined()
-      expect(manager.routeShell('/outside', 'remote-session')).toEqual({ kind: 'local' })
+      expect(() => manager.routeShell('/outside', 'remote-session')).toThrow('no execution world is bound')
+      expect(manager.routeShell('/outside')).toEqual({ kind: 'local' })
     } finally {
       await ctx.fiber.dispose()
       await rm(root, { recursive: true, force: true })
@@ -310,7 +332,7 @@ describe('RemoteSshManager', () => {
       expect(() => manager.workspace('project')).toThrow(/unknown or removed remote workspace/)
       expect(() => manager.route('README.md', alias)).toThrow(/workspace alias is no longer configured/)
       expect(() => manager.route(resolve(alias, 'README.md'))).toThrow(/workspace alias is no longer configured/)
-      expect(() => manager.routeShell('/srv/project', 'stale-session')).not.toThrow()
+      expect(() => manager.routeShell('/srv/project', 'stale-session')).toThrow('no execution world is bound')
 
       manager.bindSession('removed-session', {}, alias)
       expect(() => manager.routeShell('/srv/project', 'removed-session')).toThrow(/workspace alias is no longer configured/)
@@ -345,7 +367,7 @@ describe('RemoteSshManager', () => {
         return {
           ctx: ownedCtx,
           remote: sharedRemote,
-          key: JSON.stringify(['test-devbox', [], 'code', null]),
+          key: JSON.stringify([JSON.stringify(['test-devbox', [], 'code', null]), JSON.stringify([manager.snapshot().sshConfigFile ?? null, manager.snapshot().protocolVersions, manager.snapshot().startupTimeoutMs, manager.snapshot().requestTimeoutMs, manager.snapshot().shutdownTimeoutMs, manager.snapshot().connectTimeoutMs])]),
           server: { id: 'devbox', label: 'Devbox', sshTarget: 'test-devbox' },
           transport: { executable: 'ssh', args: [], multiplexed: false },
         }
@@ -363,7 +385,7 @@ describe('RemoteSshManager', () => {
       const stillShared = await manager.workspaceContext(manager.workspace('project-b'))
       expect(creations).toBe(1)
       expect(stillShared.remote).toBe(sharedRemote)
-      for (const change of [{ protocolVersions: ['0.9.0'] }, { startupTimeoutMs: 12_345 }, { requestTimeoutMs: 23_456 }, { shutdownTimeoutMs: 1_234 }]) {
+      for (const change of [{ protocolVersions: ['0.9.0'] }, { startupTimeoutMs: 12_345 }, { requestTimeoutMs: 23_456 }, { shutdownTimeoutMs: 1_234 }, { sshConfigFile: join(root, 'changed-config') }]) {
         const previousCreations = creations
         const descriptor = ctx.settings.describe()[0]!
         await ctx.settings.replace(descriptor.ns, { ...manager.snapshot(), ...change }, descriptor.revision)
@@ -406,7 +428,7 @@ describe('RemoteSshManager', () => {
       ;(manager as unknown as { createHostContext(server: unknown): Promise<unknown> }).createHostContext = async server => ({
         ctx: hostCtx,
         remote,
-        key: JSON.stringify(['test-devbox', [], 'code', null]),
+        key: JSON.stringify([JSON.stringify(['test-devbox', [], 'code', null]), JSON.stringify([manager.snapshot().sshConfigFile ?? null, manager.snapshot().protocolVersions, manager.snapshot().startupTimeoutMs, manager.snapshot().requestTimeoutMs, manager.snapshot().shutdownTimeoutMs, manager.snapshot().connectTimeoutMs])]),
         server,
         transport: { executable: 'ssh', args: [], multiplexed: false },
       })

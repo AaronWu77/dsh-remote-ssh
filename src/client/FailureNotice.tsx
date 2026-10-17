@@ -1,6 +1,6 @@
 /** Localized in-place action failure with selectable technical details. */
 import type { ReactElement } from 'react'
-import { error as errorStyle } from './styles.ts'
+import css from './ui.module.css'
 import type { Translate } from './types.ts'
 
 /**
@@ -12,9 +12,9 @@ export function FailureNotice(props: { error: unknown; t: Translate }): ReactEle
   if (!props.error) return null
   const details = props.error instanceof Error ? props.error.message : String(props.error)
   return <div role="alert">
-    <p style={errorStyle}>{props.t('actionFailed')}</p>
+    <p className={css.error}>{props.t('actionFailed')}</p>
     <details><summary>{props.t('errorDetails')}</summary>
-      <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: '30vh', overflow: 'auto', fontSize: 'inherit' }}>{details}</pre>
+      <pre className={css.details}>{details}</pre>
     </details>
   </div>
 }

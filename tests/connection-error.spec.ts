@@ -23,6 +23,16 @@ describe('connection diagnostic presentation', () => {
   it('redacts query and command connection tokens', () => {
     expect(redactConnectionCredentials('ws://localhost/?tkn=secret-token&x=1 --connection-token secret-cli')).toBe('ws://localhost/?tkn=[redacted]&x=1 --connection-token [redacted]')
   })
+  it('distinguishes SSH execution failures with locale-owned details, not authentication guesses', () => {
+    const error = new RemoteSshRequestError('standalone CLI (ssh exit 255): no output <unsafe>', 'ssh_execution_failed')
+    for (const dictionary of [en, zh]) {
+      const markup = renderToStaticMarkup(ConnectionErrorNotice({ error, t: key => dictionary[key] }))
+      expect(markup).toContain(dictionary.sshExecutionFailed)
+      expect(markup).not.toContain(dictionary.agentHostUnavailable)
+      expect(markup).toContain('ssh exit 255')
+      expect(markup).toContain('&lt;unsafe&gt;')
+    }
+  })
   it('renders locale-owned summaries and escaped expandable diagnostics', () => {
     const error = new RemoteSshRequestError('Agent Host accepts [^0.9.0] <script>token</script>', 'agent_host_unavailable')
     for (const dictionary of [en, zh]) {

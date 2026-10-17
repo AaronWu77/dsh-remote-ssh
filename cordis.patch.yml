@@ -58,6 +58,12 @@
       name: dsh-remote-ssh/web
       inject: [remoteSshManager]
 
+    - id: remote-ssh-sidebar-workspace
+      name: dsh-remote-ssh/sidebar-bridge
+      inject: [remoteSshManager, sidebarWorkspaceProviders]
+      config: {}
+
+
     # Both LOCAL and Remote use this plugin's in-app browser. The Host browse
     # backend supplies local listings; Remote listings come from SSH/AHP.
     - id: remote-ssh-directory-browser
@@ -84,7 +90,7 @@
     # bind their own explicit dialect while sharing the same cwd router.
     - id: remote-ssh-shell-default
       name: dsh-remote-ssh/shell-transparent
-      inject: [subprocess, remoteSshManager]
+      inject: [localSubprocess, remoteSshManager, sandbox, sandboxPolicy]
       config:
         dialect: !!js >-
           process.platform === 'win32' ? 'pwsh' : 'bash'
@@ -100,7 +106,7 @@
       config:
         - id: remote-ssh-bash-shell
           name: dsh-remote-ssh/shell-transparent
-          inject: [subprocess, remoteSshManager]
+          inject: [localSubprocess, remoteSshManager, sandbox, sandboxPolicy]
           config:
             dialect: bash
         - id: remote-ssh-bash-tool
@@ -115,7 +121,7 @@
       config:
         - id: remote-ssh-pwsh-executor
           name: dsh-remote-ssh/shell-transparent
-          inject: [subprocess, remoteSshManager]
+          inject: [localSubprocess, remoteSshManager, sandbox, sandboxPolicy]
           config:
             dialect: pwsh
         - id: remote-ssh-pwsh-tool
@@ -170,15 +176,3 @@
 
 - id: directory-picker
   disabled: true
-
-# Local and remote arbitrary processes cannot share one kernel confinement
-# mechanism. Refuse restrictive shell calls in the executor and make the SSH
-# account/container the remote security boundary.
-- id: sandbox-policy
-  config:
-    mode: danger-full-access
-    workspaceRoot: !!js process.cwd()
-
-- id: approval
-  config:
-    policy: never

@@ -1,0 +1,25 @@
+# Bilingual-pair consistency record for ui.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write local-plugins/plugins/remote-ssh/docs/ui.md
+/workspace-picker-ui:
+  en: 59945144abd83c6a
+  zh: edb3ac81a809ce37
+/workspace-picker-ui/summary:
+  en: 43a5cf36ee17ebc1
+  zh: 683d9cb3280c6559
+/workspace-picker-ui/contents:
+  en: 2d0675c1fb465ca0
+  zh: f371c4562f48f2ea
+/workspace-picker-ui/choose-and-confirm:
+  en: 1c2756260b556c46
+  zh: 20aa5bfcf4729489
+/workspace-picker-ui/recovery-and-cancellation:
+  en: 76d983f1e2cfbae5
+  zh: 4d652ace272815a4
+/workspace-picker-ui/advanced-settings-and-diagnostics:
+  en: a9c3ae6497879ede
+  zh: 6d19bb5b84aad3e9
+/workspace-picker-ui/developer-reference:
+  en: 6497ae58caff8ff6
+  zh: ad7d48228801a0d3

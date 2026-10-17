@@ -29,6 +29,8 @@ class FakeTerminalAhp {
   readonly subscription = new FakeSubscription()
   readonly writes: string[] = []
   disposed = false
+  unsubscribed = false
+  unsubscribeError: Error | undefined
   dispatched = 0
   abortAt: 'write' | 'create' | 'subscribe' | 'dispatch' | undefined
   disposeError: Error | undefined
@@ -43,6 +45,11 @@ class FakeTerminalAhp {
     if (method === 'createTerminal' && this.createError) throw this.createError
     if (method === 'createTerminal' && this.abortAt === 'create') this.controller?.abort()
     return {}
+  }
+  async unsubscribe(_channel: string) {
+    if (this.unsubscribeError) throw this.unsubscribeError
+    this.unsubscribed = true
+    await this.subscription.close()
   }
   async subscribe() {
     if (this.abortAt === 'subscribe') this.controller?.abort()

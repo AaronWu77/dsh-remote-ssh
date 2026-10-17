@@ -34,8 +34,10 @@ describe('current client directory navigation', () => {
     apply(ctx)
     const registration = registrations.find(row => row.name === 'conversation.hero.workspace.directoryFlow')
     expect(registration?.inject).toBeTypeOf('function')
-    const result = await registration!.inject!().listLocal('D:/projects/demo')
-    expect(listDirectory).toHaveBeenCalledWith('D:/projects/demo')
+    const signal = new AbortController().signal
+    const result = await registration!.inject!().listLocal('D:/projects/demo', signal)
+    expect(listDirectory).toHaveBeenCalledWith('D:/projects/demo', signal)
+    expect(registrations.find(row => row.name === 'settings.section')?.inject).toBeTypeOf('function')
     expect(result).toEqual({
       path: 'D:/projects/demo', home: 'D:/projects', parent: 'D:/projects',
       entries: [{ name: 'src', path: 'D:/projects/demo/src' }],
