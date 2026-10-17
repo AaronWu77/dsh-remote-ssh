@@ -10,6 +10,7 @@ Add a LOCAL or SSH workspace from the conversation welcome screen, workspace sid
 
 - [Choose and confirm](#choose-and-confirm)
 - [Recovery and cancellation](#recovery-and-cancellation)
+- [Advanced settings and diagnostics](#advanced-settings-and-diagnostics)
 - [Developer reference](#developer-reference)
 
 ## Choose and confirm
