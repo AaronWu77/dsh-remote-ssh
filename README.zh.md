@@ -1,5 +1,15 @@
 # dsh Remote SSH
 
+## 0.2.1-rc.2 隔离候选资格（2026-10-17）
+
+本节覆盖当前 fork 候选，后文历史真实 Linux/AHP 记录不是本轮 rc.2 的 canary。基线已是显式 schema 声明修复 `b9c5f53`；配对 Sidebar `0.19.3-remote.6` / Remote `0.2.4-aaron.12-sidebar.6`，Host 固定 `0.2.1-rc.2 / 687f282`。实际链接为 Cordis `4.0.5`、Schemastery `3.18.5`；DSH dev pin 为 rc.2，peer/engines 保留 alpha.2 并加入 rc.2，**不宣称旧版已重验**。候选根统一冻结依赖，本包没有另行 install。
+
+- focused `--maxWorkers=1`：主 lane 19 文件 **162 通过**；Git 仅 mock route 组 **10 通过、7 未选**（不执行真实 local output scripts）；有界脱敏诊断展示 **5 通过**。合计 21 文件 **177 通过、7 未验证**。真实内存 Connection 的 3 个用例已计入主 lane；真实 SSH/live suites 没有运行，更不能把它们的 self-skip 当通过。
+- 覆盖 Sidebar bridge/workspace 的 POSIX/alias/会话 symlink containment、字节读取/上传/PTY 输入 resize 与最终输出、撤销/cleanup ACK 与不确定清理、Git deadline/流结束所有权；expectedRevision、active-run/diagnostic 拒绝危险配置、reset 确认、editor-only 不断连；mock startup deadline/fallback/retry、cleanup 必须成功、诊断长度/令牌脱敏。任意远端 shell 的 `danger-full-access` 要求及受限模式拒绝保持不变，不回退本地、不自动重放操作；cancel 不保证 rollback。
+- rc.2 的 raw `requestRejection` 可接受 live API Peer，**不是** Connection exact-fetch 的 owner 授权。新 Host 提供 `admit` 时本插件另验 owner；当前 Host 交换的 API credential 本身即为 owner，没有复现默认非 owner 越权。匿名/坏 Origin、释放后的 cookie、未来非 owner 负例在处理请求体/资源前拒绝；旧 Host 无 `admit` 时维持原栅栏。
+- 顺序 Sidebar build → Remote build（含 typecheck）→ Remote 独立 typecheck 通过；此前并发清空 Sidebar lib 造成的缺类型错误不算产品缺陷。未改 snapshot expected；没有升级第三方功能或修改外观。**未启动 DSH 服务、真实 SSH/provider，未验证真实 profile/browser/远端或原生进程清理**；真实 Loader/浏览器/SSH/AHP canary 仍缺资格。未部署/commit/push，必须双包停服后一起更换。
+
+
 [English](README.md) | 中文
 
 把 SSH 主机作为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 中的透明工作区使用。
@@ -46,7 +56,7 @@ manager 的 `sshConfigFile` 同时控制发现和实际连接：runtime 启动�
 
 侧栏 `.6` 配套包在当前原生编辑器内保留对话文件资源标识，不替换成本地下载路径，详见[文件导航迁移指南](docs/upgrade-guide/v0.2.4-aaron.12-sidebar.5/sidebar-file-navigation/guide.zh.md)。文件名搜索的协议与上限保持不变；此版本不优化大型工作区搜索延迟。
 
-此可编辑 checkout 在 `package.json` 中声明 DSH 0.2.1-alpha.2 peer 依赖。请构建并安装本地归档；npm registry 中的是上游版本，不包含此 fork 的适配：
+此可编辑候选 checkout 声明 DSH `0.2.1-alpha.2 || 0.2.1-rc.2` peer/engines，开发依赖精确钉 rc.2（验证范围以上方资格说明为准）。请构建并安装本地归档；npm registry 中的是上游版本，不包含此 fork 的适配：
 
 ```sh
 pnpm install --ignore-scripts

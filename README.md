@@ -1,5 +1,15 @@
 # dsh Remote SSH
 
+## Isolated 0.2.1-rc.2 candidate qualification (2026-10-17)
+
+This qualifies the current fork candidate only; historical Linux/AHP evidence below is not an rc.2 canary. The baseline already includes explicit schema declarations at `b9c5f53`. Pair Sidebar `0.19.3-remote.6` with Remote `0.2.4-aaron.12-sidebar.6` against Host `0.2.1-rc.2 / 687f282`. Actual links resolve Cordis `4.0.5` and Schemastery `3.18.5`. DSH dev pins target rc.2; peers/engines retain alpha.2 and add rc.2, **without claiming older versions were revalidated**. The candidate root owns the final dependency freeze; this package did not run install.
+
+- Focused `--maxWorkers=1`: main lane 19 files, **162 passed**; mocked Git route group **10 passed / 7 not selected** (real local-output scripts excluded); bounded/redacted diagnostic presentation **5 passed**. Distinct total: 21 files, **177 passed / 7 unverified**. Three real in-memory Connection cases are included in the main lane. No live SSH suite ran; a live suite's self-skip must never count as a pass.
+- Covers Sidebar bridge/workspace POSIX/alias/Session symlink containment, byte reads/uploads, PTY input/resize/final output, revocation/cleanup ACK and uncertain cleanup, Git deadline/stream ownership; expectedRevision, active-run/diagnostic safety, reset confirmation and editor-only non-disconnection; mocked startup deadline/fallback/retry and successful-cleanup requirements; diagnostic bounds/token redaction. Arbitrary remote shell still requires `danger-full-access` and rejects restricted modes; no local fallback or automatic replay. Cancellation does not guarantee rollback.
+- rc.2 raw `requestRejection` accepts live API Peers; it is **not** Connection exact-fetch's owner authorization. When `admit` is present, these routes additionally require an owner. Current Host API exchange itself mints owners; no default non-owner escalation was reproduced. Anonymous/bad-Origin/released-cookie/future-non-owner cases are rejected before body/resource work. Older hosts without `admit` retain their existing fence.
+- Ordered Sidebar build → Remote build (includes typecheck) → standalone Remote typecheck passed. Earlier missing Sidebar types during concurrent lib cleanup were an ordering issue, not a product defect. No snapshot expected values, third-party features or appearance changed. **No DSH service, real SSH/provider, profile/browser or real remote/native process cleanup was verified.** Real Loader/browser/SSH/AHP canaries remain qualification gaps. No deployment/commit/push; replace both packages together only after stopping the service.
+
+
 English | [中文](README.zh.md)
 
 Use SSH hosts as transparent workspaces in [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
@@ -46,7 +56,7 @@ Manager `sshConfigFile` controls both discovery and connections: runtime startup
 
 The Sidebar `.6` pair preserves conversation file-resource identity in the active native editor instead of substituting local download paths; see the [file-navigation migration guide](docs/upgrade-guide/v0.2.4-aaron.12-sidebar.5/sidebar-file-navigation/guide.md). Filename-search protocol and limits are unchanged; this release does not optimize large-workspace search latency.
 
-This editable checkout declares DSH 0.2.1-alpha.2 peer dependencies in `package.json`. Build and install its local archive; the npm registry package is the upstream release, not this fork:
+This editable candidate checkout declares DSH `0.2.1-alpha.2 || 0.2.1-rc.2` peers/engines, with exact rc.2 development pins (see the qualification scope above). Build and install its local archive; the npm registry package is the upstream release, not this fork:
 
 ```sh
 pnpm install --ignore-scripts

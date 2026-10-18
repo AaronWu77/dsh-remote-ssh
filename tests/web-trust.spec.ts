@@ -9,7 +9,7 @@ interface RegisteredRoute {
   handler: (req: IncomingMessage, res: ServerResponse) => Promise<void>
 }
 
-async function setup(rejection: 401 | 403 | undefined, method: string) {
+async function setup(rejection: 401 | 403 | undefined, method: string, principal?: string) {
   const ctx = new Context()
   const routes: RegisteredRoute[] = []
   const handler = vi.fn()
@@ -17,7 +17,7 @@ async function setup(rejection: 401 | 403 | undefined, method: string) {
   ctx.provide('remoteSshManager', manager as never)
   ctx.provide('webServer', { register: (route: RegisteredRoute) => { routes.push(route); return () => {} } } as never)
   const requestRejection = vi.fn(() => rejection)
-  ctx.provide('connection', { requestRejection } as never)
+  ctx.provide('connection', { requestRejection, ...(principal === undefined ? {} : { admit: () => ({ peer: { principal: { kind: principal } } }) }) } as never)
   apply(ctx, { maxErrorCharacters: 1024 })
   await ctx.fiber.await()
   const route = routes.find(candidate => candidate.path === REMOTE_SSH_STATE_PATH)
@@ -43,6 +43,17 @@ describe('Remote SSH Web route trust fence', () => {
   it('answers an unauthenticated caller with the fence status', async () => {
     const { response } = await setup(401, 'GET')
     expect(response.statusCode).toBe(401)
+  })
+
+  it('rejects a future non-owner admitted by raw requestRejection', async () => {
+    const { response, workspaceCalls } = await setup(undefined, 'GET', 'future-non-owner')
+    expect(response.statusCode).toBe(403)
+    expect(workspaceCalls).toBe(0)
+  })
+
+  it('keeps owner API admission compatible', async () => {
+    const { response } = await setup(undefined, 'POST', 'owner')
+    expect(response.writeHead).toHaveBeenCalledWith(405, expect.anything())
   })
 
   it('reaches the method check only after the fence admits the request', async () => {

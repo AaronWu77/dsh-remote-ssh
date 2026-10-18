@@ -75,6 +75,9 @@ function resolveDiagnosticPolicy(config: WebConfig) {
  */
 interface ConnectionFence {
   requestRejection(request: { readonly headers: IncomingMessage['headers'] }): 401 | 403 | undefined
+  /** rc.2 raw admission also accepts live API Peers; these routes remain owner-only. */
+  admit?(request: { readonly headers: IncomingMessage['headers'] }):
+    { rejection: 401 | 403 } | { peer: { principal: { kind: string } } }
 }
 
 /** Activate the Web surface only in compositions that provide a Web host and its trust fence. */
@@ -237,7 +240,12 @@ function registerRoute(
   return ctx.webServer.register({
     kind: 'exact', path,
     handler: async (req, res) => {
-      const rejection = fence.requestRejection(req)
+      let rejection = fence.requestRejection(req)
+      if (rejection === undefined && typeof fence.admit === 'function') {
+        const admission = fence.admit(req)
+        rejection = 'rejection' in admission ? admission.rejection
+          : admission.peer.principal.kind === 'owner' ? undefined : 403
+      }
       if (rejection !== undefined) {
         res.statusCode = rejection
         res.end()
