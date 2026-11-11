@@ -11,13 +11,14 @@
     "url": "git+https://github.com/AaronWu77/dsh-remote-ssh.git"
   },
   "bugs": {
-    "url": "https://github.com/Yan-Zero/dsh-remote-ssh/issues"
+    "url": "https://github.com/AaronWu77/dsh-remote-ssh/issues"
   },
-  "homepage": "https://github.com/Yan-Zero/dsh-remote-ssh#readme",
+  "homepage": "https://github.com/AaronWu77/dsh-remote-ssh",
   "type": "module",
   "main": "lib/host.js",
   "types": "lib/host.d.ts",
   "exports": {
+    "./locale/*.json": "./locale/*.json",
     ".": {
       "types": "./lib/host.d.ts",
       "default": "./lib/host.js"
@@ -95,6 +96,7 @@
     "./package.json": "./package.json"
   },
   "files": [
+    "locale/*.json",
     "lib",
     "src",
     "scripts",
@@ -107,6 +109,23 @@
   ],
   "license": "Apache-2.0",
   "dsh": {
+    "documentation": {
+      "en": "https://github.com/AaronWu77/dsh-remote-ssh/blob/HEAD/README.md",
+      "zh": "https://github.com/AaronWu77/dsh-remote-ssh/blob/HEAD/README.zh.md"
+    },
+    "upstreams": [
+      {
+        "name": "dsh-remote-ssh",
+        "repository": "https://github.com/Yan-Zero/dsh-remote-ssh",
+        "relation": "adapted",
+        "license": "Apache-2.0",
+        "changes": {
+          "en": "Local DSH compatibility, Remote SSH workspace routing, diagnostics, and Better Sidebar integration.",
+          "zh": "本地 DSH 兼容、远程工作区路由、连接诊断与 Better Sidebar 集成。"
+        },
+        "record": "https://github.com/AaronWu77/dsh-remote-ssh/blob/HEAD/UPGRADE.md"
+      }
+    ],
     "bundle": {
       "patch": "./cordis.patch.yml"
     },
@@ -127,43 +146,43 @@
     }
   },
   "peerDependencies": {
-    "dsh-better-sidebar": "0.19.3-remote.6",
-    "@deepseek-ai/cordis": "^4.0.1-rc.1 || 4.0.5-alpha.1 || 4.0.5",
-    "@deepseek-ai/dsh-agent": "0.2.1-alpha.2 || 0.2.1-rc.2",
-    "@deepseek-ai/dsh-bash-local": "0.2.1-alpha.2 || 0.2.1-rc.2",
-    "@deepseek-ai/dsh-bash-sandbox": "0.2.1-alpha.2 || 0.2.1-rc.2",
-    "@deepseek-ai/dsh-client-locale": "0.2.1-alpha.2 || 0.2.1-rc.2",
-    "@deepseek-ai/dsh-client-ui-settings-plugins": "0.2.1-alpha.2 || 0.2.1-rc.2",
-    "@deepseek-ai/dsh-client-ui-slots": "0.2.1-alpha.2 || 0.2.1-rc.2",
-    "@deepseek-ai/dsh-client-ui-workspace": "0.2.1-alpha.2 || 0.2.1-rc.2",
-    "@deepseek-ai/dsh-fs": "0.2.1-alpha.2 || 0.2.1-rc.2",
-    "@deepseek-ai/dsh-fs-local": "0.2.1-alpha.2 || 0.2.1-rc.2",
-    "@deepseek-ai/dsh-fs-sandbox": "0.2.1-alpha.2 || 0.2.1-rc.2",
-    "@deepseek-ai/dsh-host-directory-picker-browse": "0.2.1-alpha.2 || 0.2.1-rc.2",
-    "@deepseek-ai/dsh-host-webserver": "0.2.1-alpha.2 || 0.2.1-rc.2",
-    "@deepseek-ai/dsh-llm": "0.2.1-alpha.2 || 0.2.1-rc.2",
-    "@deepseek-ai/dsh-pwsh-local": "0.2.1-alpha.2 || 0.2.1-rc.2",
-    "@deepseek-ai/dsh-pwsh-sandbox": "0.2.1-alpha.2 || 0.2.1-rc.2",
-    "@deepseek-ai/dsh-sandbox": "0.2.1-alpha.2 || 0.2.1-rc.2",
-    "@deepseek-ai/dsh-sandbox-policy": "0.2.1-alpha.2 || 0.2.1-rc.2",
-    "@deepseek-ai/dsh-settings": "0.2.1-alpha.2 || 0.2.1-rc.2",
-    "@deepseek-ai/dsh-shell": "0.2.1-alpha.2 || 0.2.1-rc.2",
-    "@deepseek-ai/dsh-spill": "0.2.1-alpha.2 || 0.2.1-rc.2",
-    "@deepseek-ai/dsh-spill-local": "0.2.1-alpha.2 || 0.2.1-rc.2",
-    "@deepseek-ai/dsh-subprocess": "0.2.1-alpha.2 || 0.2.1-rc.2",
-    "@deepseek-ai/dsh-subprocess-local": "0.2.1-alpha.2 || 0.2.1-rc.2",
-    "@deepseek-ai/dsh-system-prompt": "0.2.1-alpha.2 || 0.2.1-rc.2",
-    "@deepseek-ai/dsh-tool-bash": "0.2.1-alpha.2 || 0.2.1-rc.2",
-    "@deepseek-ai/dsh-tool-pwsh": "0.2.1-alpha.2 || 0.2.1-rc.2",
-    "@deepseek-ai/dsh-tools": "0.2.1-alpha.2 || 0.2.1-rc.2",
-    "@deepseek-ai/dsh-workspace": "0.2.1-alpha.2 || 0.2.1-rc.2",
-    "@deepseek-ai/schemastery": "^3.18.1-rc.1 || 3.18.5-alpha.1"
+    "@deepseek-ai/cordis": "^4.0.1-rc.1 || 4.0.5-alpha.1 || 4.0.5 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-agent": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-bash-local": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-bash-sandbox": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-locale": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-settings-plugins": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-slots": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-workspace": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-fs": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-fs-local": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-fs-patch": "0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-fs-sandbox": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-host-directory-picker-browse": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-host-webserver": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-llm": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-pwsh-local": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-pwsh-sandbox": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-sandbox": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-sandbox-policy": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-settings": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-shell": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-spill": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-spill-local": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-subprocess": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-subprocess-local": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-system-prompt": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-tool-bash": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-tool-pwsh": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-tools": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/dsh-workspace": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.2-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.1-rc.1 || 3.18.5-alpha.1 || 0.2.2-rc.1",
+    "dsh-better-sidebar": "0.19.3-remote.6"
   },
   "dependencies": {
     "@microsoft/agent-host-protocol": "1.0.0"
   },
   "devDependencies": {
-    "dsh-better-sidebar": "link:../better-sidebar",
     "@deepseek-ai/cordis": "4.0.5",
     "@deepseek-ai/cordis-plugin-include": "1.0.10",
     "@deepseek-ai/cordis-plugin-loader": "1.0.6",
@@ -189,6 +208,7 @@
     "@deepseek-ai/dsh-config-editor": "0.2.1-rc.2",
     "@deepseek-ai/dsh-fs": "0.2.1-rc.2",
     "@deepseek-ai/dsh-fs-local": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-fs-patch": "0.2.2-rc.1",
     "@deepseek-ai/dsh-fs-sandbox": "0.2.1-rc.2",
     "@deepseek-ai/dsh-host-directory-picker-browse": "0.2.1-rc.2",
     "@deepseek-ai/dsh-host-webserver": "0.2.1-rc.2",
@@ -218,6 +238,7 @@
     "@deepseek-ai/dsh-tools": "0.2.1-rc.2",
     "@deepseek-ai/dsh-util-workspace-path": "0.2.1-rc.2",
     "@deepseek-ai/dsh-web-app": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-working-directory": "0.2.1-rc.2",
     "@deepseek-ai/dsh-workspace": "0.2.1-rc.2",
     "@deepseek-ai/schemastery": "3.18.5",
     "@testing-library/react": "^16.3.2",
@@ -226,6 +247,7 @@
     "@types/node": "^22.20.0",
     "@types/react": "~18.3.1",
     "@types/react-dom": "18.3.1",
+    "dsh-better-sidebar": "link:../better-sidebar",
     "js-yaml": "^4.1.0",
     "jsdom": "29.1.1",
     "postcss": "^8.5.26",
@@ -234,8 +256,7 @@
     "react-dom": "18.3.1",
     "tsdown": "^0.22.2",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.8",
-    "@deepseek-ai/dsh-working-directory": "0.2.1-rc.2"
+    "vitest": "^4.1.8"
   },
   "scripts": {
     "build": "tsdown && node scripts/inject-client-style.mjs && pnpm run typecheck",
@@ -245,6 +266,6 @@
     "check": "pnpm run typecheck && pnpm run build && pnpm run test"
   },
   "engines": {
-    "dsh": "0.2.1-alpha.2 || 0.2.1-rc.2"
+    "dsh": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.2-rc.1"
   }
 }

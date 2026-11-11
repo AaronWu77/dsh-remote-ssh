@@ -10,6 +10,7 @@ import { describe, expect, it, vi } from 'vitest'
 import RemoteSshManager, { type RemoteWorkspaceContext } from '../src/manager.ts'
 import type RemoteSshRuntime from '../src/index.ts'
 import TransparentFileSystem from '../src/router-fs.ts'
+import { commitVolatileConfig } from './helpers/volatile-settings.ts'
 
 class MemorySettings extends Service {
   owner?: Fiber
@@ -21,9 +22,9 @@ class MemorySettings extends Service {
   async replace(_ns: SettingsNamespace, values: Record<string, unknown>, revision: number) {
     if (!this.owner || revision !== this.revision) throw new Error('revision conflict')
     await this.beforeWrite?.()
-    updateVolatile(this.owner.config as Volatile<Record<string, unknown>>, createVolatile(structuredClone(values)))
+    const paths = commitVolatileConfig(this.owner, values)
     this.revision += 1
-    this.owner.ctx.emit(this.owner, 'loader/volatile-update', [[]])
+    this.owner.ctx.emit(this.owner, 'loader/volatile-update', paths)
   }
 }
 

@@ -1,9 +1,11 @@
 import { Context } from '@deepseek-ai/cordis'
 import { posix } from 'node:path'
-import { FileSystem, FsTargetKey } from '@deepseek-ai/dsh-fs'
+import { FileSystem, FsError, FsTargetKey } from '@deepseek-ai/dsh-fs'
 import type {
+  FsDeleteOutcome,
   FsDirEntry,
   FsEditOutcome,
+  FsMoveOutcome,
   FsEditRequest,
   FsInfo,
   FsPathInfo,
@@ -12,6 +14,7 @@ import type {
   FsWriteIntent,
   FsWriteOutcome,
 } from '@deepseek-ai/dsh-fs'
+import type { PatchHunk } from '@deepseek-ai/dsh-fs-patch'
 import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox'
 import type { RemoteSshManager, RemoteWorkspaceContext, RemoteWorkspaceRoute } from './manager.ts'
 import { binaryWriter } from './binary-fs.ts'
@@ -152,6 +155,42 @@ export class TransparentFileSystem extends FileSystem {
     sandboxPolicy?: SandboxExecutionPolicy,
   ): Promise<FsEditOutcome> {
     return this.withBackend(target, (fs, unwrapped) => fs.editText(unwrapped, edit, expected, signal, sandboxPolicy))
+  }
+
+  override async patchText(
+    target: FsTarget,
+    hunks: readonly PatchHunk[],
+    expected?: { version: FsVersion },
+    signal?: AbortSignal,
+    sandboxPolicy?: SandboxExecutionPolicy,
+  ): Promise<FsEditOutcome> {
+    return this.withBackend(target, (fs, unwrapped) => fs.patchText(unwrapped, hunks, expected, signal, sandboxPolicy))
+  }
+
+  override async deleteFile(
+    target: FsTarget,
+    expected?: { version: FsVersion },
+    signal?: AbortSignal,
+    sandboxPolicy?: SandboxExecutionPolicy,
+  ): Promise<FsDeleteOutcome> {
+    return this.withBackend(target, (fs, unwrapped) => fs.deleteFile(unwrapped, expected, signal, sandboxPolicy))
+  }
+
+  override async moveFile(
+    source: FsTarget,
+    destination: FsTarget,
+    options: Parameters<FileSystem['moveFile']>[2],
+    signal?: AbortSignal,
+    sandboxPolicy?: SandboxExecutionPolicy,
+  ): Promise<FsMoveOutcome> {
+    // Both endpoints must live in the same execution world: one backend performs the whole move.
+    const sourceDecoded = decodeTarget(source)
+    const destinationDecoded = decodeTarget(destination)
+    if (sourceDecoded?.workspaceId !== destinationDecoded?.workspaceId) {
+      throw new FsError('cannot move across execution worlds', 'FS_SAME_TARGET')
+    }
+    return this.withBackend(source, (fs, unwrappedSource) =>
+      fs.moveFile(unwrappedSource, decodeTarget(destination) === undefined ? destination : unwrapTarget(destination, destinationDecoded!), options, signal, sandboxPolicy))
   }
 
   private async withBackend<T>(target: FsTarget, operation: (fs: FileSystem, target: FsTarget) => Promise<T>): Promise<T> {

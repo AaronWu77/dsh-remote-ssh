@@ -33,6 +33,8 @@ async function start(root: string) {
     { id: 'session-projection', name: import.meta.resolve('@deepseek-ai/dsh-session-projection') },
     { id: 'working-directory', name: import.meta.resolve('@deepseek-ai/dsh-working-directory'), config: { defaultDirectory: first } },
     ...['llm','agent','tools','system-prompt'].map(name => ({ id: name, name: import.meta.resolve('@deepseek-ai/dsh-' + name) })),
+    // The executor is a separate plugin since the native/PTC split; tools alone cannot dispatch.
+    { id: 'tool-executor-native', name: import.meta.resolve('@deepseek-ai/dsh-tool-executor-native') },
     { id: 'agent-loop', name: import.meta.resolve('@deepseek-ai/dsh-agent-loop'), config: { agents: [] } },
     { id: 'fs-router', name: new URL('../lib/router-fs.js', import.meta.url).href },
     { id: 'tool-fs', name: import.meta.resolve('@deepseek-ai/dsh-tool-fs') },
@@ -114,7 +116,13 @@ describe('native shell routing through real YAML composition', () => {
       const handle = await ctx.agents.create({sessionId:SessionId('filesystem-session'),meta:{cwd:started.initial.cwd}})
       const active = handle.agent
       let calls = 0
-      const call = (name:string,args:Record<string,string>) => ctx!.tools.execute({callId:ToolCallId('fs-'+(++calls)),name,arguments:args,agent:active,signal:new AbortController().signal})
+      const call = async (name: string, args: Record<string, string>) => {
+        const id = ToolCallId('fs-' + (++calls))
+        const batch = await ctx!.tools.execute({ calls: [{ type: 'tool-call', id, name, arguments: JSON.stringify(args) }], agent: active, signal: new AbortController().signal })
+        const hit = batch.results.find(entry => String(entry.callId) === String(id))
+        if (hit === undefined) throw new Error('tool batch did not settle ' + String(id))
+        return hit.result
+      }
       const denied = await call('write',{file_path:'note.txt',content:'initial'})
       expect(denied.isError).toBe(true)
       expect(JSON.stringify(denied)).toContain('read-only')

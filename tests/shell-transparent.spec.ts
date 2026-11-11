@@ -62,7 +62,8 @@ describe('transparent native sandbox dispatch', () => {
     const fiber = f.ctx.plugin(TransparentShellExecutor, initial)
     await fiber
     const shell = f.ctx.shell
-    const config: Config = fiber.config
+    // Live references belong to the fiber's effective config; the raw input holds plain data.
+    const config = fiber.effectiveConfig as Config
     updateVolatile(config.cwd, createVolatile('second'))
     updateVolatile(config.timeoutMs, createVolatile(1500))
     updateVolatile(config.maxTimeoutMs, createVolatile(1600))

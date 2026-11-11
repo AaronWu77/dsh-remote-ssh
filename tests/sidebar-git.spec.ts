@@ -11,6 +11,7 @@ import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import type { SidebarWorkspaceProviders } from 'dsh-better-sidebar/workspace-provider'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import RemoteSshManager from '../src/manager.ts'
+import { commitVolatileConfig } from './helpers/volatile-settings.ts'
 import { createSidebarGitBackend, type SidebarGitConfig } from '../src/sidebar-git.ts'
 import * as subprocess from '../src/router-subprocess.ts'
 import { SidebarExecutionLifetime } from '../src/sidebar-execution-lifetime.ts'
@@ -51,9 +52,9 @@ class MemorySettings extends Service {
   }
   async replace(_namespace: SettingsNamespace, next: Record<string, unknown>, revision: number): Promise<void> {
     if (revision !== this.revision || this.owner === undefined) throw new Error('settings owner or revision changed')
-    updateVolatile(this.owner.config as Volatile<Record<string, unknown>>, createVolatile(structuredClone(next)))
+    const paths = commitVolatileConfig(this.owner, next)
     this.revision += 1
-    this.owner.ctx.emit(this.owner, 'loader/volatile-update', [[]])
+    this.owner.ctx.emit(this.owner, 'loader/volatile-update', paths)
   }
 }
 

@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import RemoteSshManager from '../src/manager.ts'
+import { commitVolatileConfig } from './helpers/volatile-settings.ts'
 import type { PreferencesState, SavePreferencesRequest } from '../src/management-types.ts'
 
 class MemorySettings extends Service {
@@ -18,9 +19,9 @@ class MemorySettings extends Service {
   async replace(_ns: SettingsNamespace, values: Record<string, unknown>, revision: number) {
     if (!this.owner || revision !== this.revision) throw new Error('revision conflict')
     await this.beforeWrite?.()
-    updateVolatile(this.owner.config as Volatile<Record<string, unknown>>, createVolatile(structuredClone(values)))
+    const paths = commitVolatileConfig(this.owner, values)
     this.revision += 1
-    this.owner.ctx.emit(this.owner, 'loader/volatile-update', [[]])
+    this.owner.ctx.emit(this.owner, 'loader/volatile-update', paths)
   }
 }
 

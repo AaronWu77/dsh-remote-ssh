@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, stat, symlink } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rm, stat, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { Context, Service, type Fiber } from '@deepseek-ai/cordis'
@@ -6,7 +6,8 @@ import { createVolatile, updateVolatile, type Volatile } from '@deepseek-ai/cosm
 import type {} from '@deepseek-ai/cordis-plugin-loader'
 import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import RemoteSshManager from '../src/manager.ts'
-import { describe, expect, it } from 'vitest'
+import { commitVolatileConfig } from './helpers/volatile-settings.ts'
+import { describe, expect, it, vi } from 'vitest'
 
 class MemorySettings extends Service {
   private owner: Fiber | undefined
@@ -22,9 +23,9 @@ class MemorySettings extends Service {
   async replace(_namespace: SettingsNamespace, next: Record<string, unknown>, revision: number): Promise<void> {
     if (revision !== this.revision) throw new Error('revision changed')
     if (this.owner === undefined) throw new Error('no settings owner')
-    updateVolatile(this.owner.config as Volatile<Record<string, unknown>>, createVolatile(structuredClone(next)))
+    const paths = commitVolatileConfig(this.owner, next)
     this.revision += 1
-    this.owner.ctx.emit(this.owner, 'loader/volatile-update', [[]])
+    this.owner.ctx.emit(this.owner, 'loader/volatile-update', paths)
   }
 }
 
@@ -35,6 +36,25 @@ async function createContext(): Promise<Context> {
 }
 
 describe('RemoteSshManager', () => {
+  it('resolves configurable startup stage budgets and rejects invalid values', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-ssh-stage-policy-'))
+    const ctx = await createContext()
+    try {
+      await ctx.plugin(RemoteSshManager, { aliasRoot: root }).await()
+      expect(ctx.remoteSshManager.snapshot()).toMatchObject({ embeddedStartupTimeoutMs: 15000, standaloneStartupTimeoutMs: 30000 })
+      for (const name of ['embeddedStartupTimeoutMs', 'standaloneStartupTimeoutMs'] as const) {
+        for (const value of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+          const candidate = new Context()
+          try {
+            await candidate.plugin(MemorySettings).await()
+            const fiber = candidate.plugin(RemoteSshManager, { aliasRoot: root, [name]: value })
+            await expect(fiber.await()).rejects.toThrow(name)
+          } finally { await candidate.fiber.dispose() }
+        }
+      }
+    } finally { await ctx.fiber.dispose(); await rm(root, { recursive: true, force: true }) }
+  })
+
   it('uses one selected custom config for runtime and probe without losing SSH options', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-ssh-transport-'))
     const ctx = await createContext()
@@ -367,7 +387,7 @@ describe('RemoteSshManager', () => {
         return {
           ctx: ownedCtx,
           remote: sharedRemote,
-          key: JSON.stringify([JSON.stringify(['test-devbox', [], 'code', null]), JSON.stringify([manager.snapshot().sshConfigFile ?? null, manager.snapshot().protocolVersions, manager.snapshot().startupTimeoutMs, manager.snapshot().requestTimeoutMs, manager.snapshot().shutdownTimeoutMs, manager.snapshot().connectTimeoutMs])]),
+          key: JSON.stringify([JSON.stringify(['test-devbox', [], 'code', null]), JSON.stringify([manager.snapshot().sshConfigFile ?? null, manager.snapshot().protocolVersions, manager.snapshot().startupTimeoutMs, manager.snapshot().embeddedStartupTimeoutMs, manager.snapshot().standaloneStartupTimeoutMs, manager.snapshot().requestTimeoutMs, manager.snapshot().shutdownTimeoutMs, manager.snapshot().connectTimeoutMs])]),
           server: { id: 'devbox', label: 'Devbox', sshTarget: 'test-devbox' },
           transport: { executable: 'ssh', args: [], multiplexed: false },
         }
@@ -385,7 +405,7 @@ describe('RemoteSshManager', () => {
       const stillShared = await manager.workspaceContext(manager.workspace('project-b'))
       expect(creations).toBe(1)
       expect(stillShared.remote).toBe(sharedRemote)
-      for (const change of [{ protocolVersions: ['0.9.0'] }, { startupTimeoutMs: 12_345 }, { requestTimeoutMs: 23_456 }, { shutdownTimeoutMs: 1_234 }, { sshConfigFile: join(root, 'changed-config') }]) {
+      for (const change of [{ protocolVersions: ['0.9.0'] }, { startupTimeoutMs: 12_345 }, { embeddedStartupTimeoutMs: 4_321 }, { standaloneStartupTimeoutMs: 5_432 }, { requestTimeoutMs: 23_456 }, { shutdownTimeoutMs: 1_234 }, { sshConfigFile: join(root, 'changed-config') }]) {
         const previousCreations = creations
         const descriptor = ctx.settings.describe()[0]!
         await ctx.settings.replace(descriptor.ns, { ...manager.snapshot(), ...change }, descriptor.revision)
@@ -428,7 +448,7 @@ describe('RemoteSshManager', () => {
       ;(manager as unknown as { createHostContext(server: unknown): Promise<unknown> }).createHostContext = async server => ({
         ctx: hostCtx,
         remote,
-        key: JSON.stringify([JSON.stringify(['test-devbox', [], 'code', null]), JSON.stringify([manager.snapshot().sshConfigFile ?? null, manager.snapshot().protocolVersions, manager.snapshot().startupTimeoutMs, manager.snapshot().requestTimeoutMs, manager.snapshot().shutdownTimeoutMs, manager.snapshot().connectTimeoutMs])]),
+        key: JSON.stringify([JSON.stringify(['test-devbox', [], 'code', null]), JSON.stringify([manager.snapshot().sshConfigFile ?? null, manager.snapshot().protocolVersions, manager.snapshot().startupTimeoutMs, manager.snapshot().embeddedStartupTimeoutMs, manager.snapshot().standaloneStartupTimeoutMs, manager.snapshot().requestTimeoutMs, manager.snapshot().shutdownTimeoutMs, manager.snapshot().connectTimeoutMs])]),
         server,
         transport: { executable: 'ssh', args: [], multiplexed: false },
       })
@@ -497,6 +517,72 @@ describe('RemoteSshManager', () => {
       expect(restored.workspaces.map(workspace => workspace.id)).toEqual(['project'])
       expect(restored.retiredAliases).toEqual([])
       expect(() => manager.workspace('project')).not.toThrow()
+    } finally { await ctx.fiber.dispose(); await rm(root, { recursive: true, force: true }) }
+  })
+
+  it('keeps a workspace name the Workspace surface owns when the catalog stores none', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-remote-ssh-manager-'))
+    const aliasRoot = resolve(root, 'aliases')
+    const alias = resolve(aliasRoot, 'project')
+    await mkdir(alias, { recursive: true })
+    const canonical = await realpath(alias)
+    const records = [{ path: canonical, title: '后端项目' }]
+    const setTitle = vi.fn(async (_path: string, _title: string) => {})
+    const registry = {
+      create: vi.fn(async (path: string, title?: string) => {
+        let record = records.find(entry => entry.path === path)
+        if (record === undefined) { record = { path, title: title ?? path }; records.push(record) }
+        const owned = record
+        return { path: owned.path, get title() { return owned.title }, setTitle: (next: string) => setTitle(owned.path, next) }
+      }),
+      list: () => records.map(record => ({ ...record })),
+    }
+    const ctx = await createContext()
+    ctx.provide('workspaceRegistry', registry as never)
+    try {
+      await ctx.plugin(RemoteSshManager, {
+        aliasRoot,
+        servers: [{ id: 'devbox', label: 'Devbox', sshTarget: 'test-devbox' }],
+        workspaces: [{ id: 'project', serverId: 'devbox', remotePath: '/srv/project' }],
+      })
+      await vi.waitFor(() => { expect(registry.create).toHaveBeenCalled() })
+      expect(setTitle).not.toHaveBeenCalled()
+      expect(records[0]?.title).toBe('后端项目')
+      expect(ctx.remoteSshManager.workspaceTitle(ctx.remoteSshManager.workspace('project'))).toBe('后端项目')
+      expect(ctx.remoteSshManager.displayRemoteCwd(ctx.remoteSshManager.workspace('project'))).toBe('/后端项目')
+    } finally { await ctx.fiber.dispose(); await rm(root, { recursive: true, force: true }) }
+  })
+
+  it('applies a catalog title over the Workspace record it replaces', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-remote-ssh-manager-'))
+    const aliasRoot = resolve(root, 'aliases')
+    const alias = resolve(aliasRoot, 'project')
+    await mkdir(alias, { recursive: true })
+    const canonical = await realpath(alias)
+    const records = [{ path: canonical, title: '旧名字' }]
+    const setTitle = vi.fn(async (path: string, title: string) => {
+      const record = records.find(entry => entry.path === path)
+      if (record !== undefined) record.title = title
+    })
+    const registry = {
+      create: vi.fn(async (path: string, title?: string) => {
+        let record = records.find(entry => entry.path === path)
+        if (record === undefined) { record = { path, title: title ?? path }; records.push(record) }
+        const owned = record
+        return { path: owned.path, get title() { return owned.title }, setTitle: (next: string) => setTitle(owned.path, next) }
+      }),
+      list: () => records.map(record => ({ ...record })),
+    }
+    const ctx = await createContext()
+    ctx.provide('workspaceRegistry', registry as never)
+    try {
+      await ctx.plugin(RemoteSshManager, {
+        aliasRoot,
+        servers: [{ id: 'devbox', label: 'Devbox', sshTarget: 'test-devbox' }],
+        workspaces: [{ id: 'project', serverId: 'devbox', remotePath: '/srv/project', title: 'Backend' }],
+      })
+      await vi.waitFor(() => { expect(setTitle).toHaveBeenCalledWith(canonical, 'Backend') })
+      expect(records[0]?.title).toBe('Backend')
     } finally { await ctx.fiber.dispose(); await rm(root, { recursive: true, force: true }) }
   })
 })

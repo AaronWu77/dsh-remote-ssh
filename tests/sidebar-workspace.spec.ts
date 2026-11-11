@@ -11,6 +11,7 @@ import { AhpClient, InMemoryTransport, type AhpTransport } from '@microsoft/agen
 import type { SidebarWorkspaceProviders } from 'dsh-better-sidebar/workspace-provider'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import RemoteSshManager from '../src/manager.ts'
+import { commitVolatileConfig } from './helpers/volatile-settings.ts'
 import RemoteSshFileSystem from '../src/fs.ts'
 import { fileUriFromPosixPath, posixPathFromFileUri } from '../src/index.ts'
 import { createSidebarRemoteWorkspace, resolveConfig, type Config } from '../src/sidebar-workspace.ts'
@@ -41,9 +42,9 @@ class MemorySettings extends Service {
   describe() { return [{ ns: 'remote-ssh-manager' as SettingsNamespace, revision: this.revision }] }
   async replace(_namespace: SettingsNamespace, next: Record<string, unknown>, revision: number) {
     if (revision !== this.revision || this.owner === undefined) throw new Error('Settings owner or revision changed')
-    updateVolatile(this.owner.config as Volatile<Record<string, unknown>>, createVolatile(structuredClone(next)))
+    const paths = commitVolatileConfig(this.owner, next)
     this.revision++
-    this.owner.ctx.emit(this.owner, 'loader/volatile-update', [[]])
+    this.owner.ctx.emit(this.owner, 'loader/volatile-update', paths)
   }
 }
 interface NodeEntry { type: 'file' | 'directory' | 'symlink'; bytes: Buffer; version: number; link?: string; mode?: number }

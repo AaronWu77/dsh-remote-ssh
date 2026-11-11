@@ -4,9 +4,13 @@ import { AhpErrorCodes } from '@microsoft/agent-host-protocol'
 import { RpcError } from '@microsoft/agent-host-protocol/client'
 import { Context } from '@deepseek-ai/cordis'
 import { FileSystem, FsError, FsTargetKey, FsVersion } from '@deepseek-ai/dsh-fs'
+import { applyHunks } from '@deepseek-ai/dsh-fs-patch'
+import type { PatchHunk } from '@deepseek-ai/dsh-fs-patch'
 import type {
+  FsDeleteOutcome,
   FsDirEntry,
   FsEditOutcome,
+  FsMoveOutcome,
   FsEditRequest,
   FsInfo,
   FsPathInfo,
@@ -374,6 +378,146 @@ export class RemoteSshFileSystem extends FileSystem {
       const afterProbe = await this.probe(target, true)
       if (afterProbe === undefined) throw new FsError(`edit did not publish "${target.displayPath}"`, 'FS_IO_ERROR')
       return { version: afterProbe.version, before, after: normalizedAfter }
+    })
+  }
+
+  override async patchText(
+    target: FsTarget,
+    hunks: readonly PatchHunk[],
+    expected?: { version: ReturnType<typeof FsVersion> },
+    signal?: AbortSignal,
+    sandboxPolicy?: SandboxExecutionPolicy,
+  ): Promise<FsEditOutcome> {
+    assertMutationAllowed(this.mapper, target, sandboxPolicy)
+    return this.withLock(String(target.targetKey), async () => {
+      throwIfAborted(signal, 'patch')
+      const existing = await this.probe(target, true)
+      if (existing === undefined || (expected !== undefined && existing.version !== expected.version)) {
+        throw new FsError(`cannot patch "${target.displayPath}": file changed since it was read`, 'FS_STALE_VERSION')
+      }
+      if (resourceType(existing.resolved.type) !== 'file') {
+        throw new FsError(`cannot patch "${target.displayPath}": not a regular file`, 'FS_NOT_REGULAR_FILE')
+      }
+      const stored = await this.readText(target, signal)
+      const before = normalizeLineEndings(stored)
+      const patched = applyHunks(before, hunks)
+      if (!patched.ok) {
+        throw new FsError(`cannot patch "${target.displayPath}": hunk at patch line ${patched.failure.hunkLineNumber} (${patched.failure.stage}) does not match`, 'FS_PATCH_MISMATCH')
+      }
+      const after = patched.after
+      const afterStorage = usesCrlf(stored) ? after.replaceAll('\n', '\r\n') : after
+      try {
+        const client = await this.remote.getClient()
+        await client.resourceWrite({
+          uri: this.fileUrl(target),
+          data: afterStorage,
+          encoding: UTF8,
+          contentType: 'text/plain; charset=utf-8',
+          ...(existing.resolved.etag !== undefined ? { ifMatch: existing.resolved.etag } : {}),
+        })
+      } catch (error: unknown) {
+        throw mapFsError('patch', target.displayPath, error)
+      }
+      throwIfAborted(signal, 'patch')
+      const afterProbe = await this.probe(target, true)
+      if (afterProbe === undefined) throw new FsError(`patch did not publish "${target.displayPath}"`, 'FS_IO_ERROR')
+      return { version: afterProbe.version, before, after }
+    })
+  }
+
+  override async deleteFile(
+    target: FsTarget,
+    expected?: { version: ReturnType<typeof FsVersion> },
+    signal?: AbortSignal,
+    sandboxPolicy?: SandboxExecutionPolicy,
+  ): Promise<FsDeleteOutcome> {
+    assertMutationAllowed(this.mapper, target, sandboxPolicy)
+    return this.withLock(String(target.targetKey), async () => {
+      throwIfAborted(signal, 'delete')
+      const existing = await this.probe(target, true)
+      if (existing === undefined || (expected !== undefined && existing.version !== expected.version)) {
+        throw new FsError(`cannot delete "${target.displayPath}": file changed since it was read`, 'FS_STALE_VERSION')
+      }
+      if (resourceType(existing.resolved.type) !== 'file') {
+        throw new FsError(`cannot delete "${target.displayPath}": not a regular file`, 'FS_NOT_REGULAR_FILE')
+      }
+      // The bounded basis follows FsDeleteOutcome.before: unavailable when the text cannot be read.
+      const before = await this.readText(target, signal).then(normalizeLineEndings).catch(() => null)
+      throwIfAborted(signal, 'delete')
+      try {
+        const client = await this.remote.getClient()
+        await client.resourceDelete({ uri: this.fileUrl(target), recursive: false })
+      } catch (error: unknown) {
+        throw mapFsError('delete', target.displayPath, error)
+      }
+      return { before }
+    })
+  }
+
+  override async moveFile(
+    source: FsTarget,
+    destination: FsTarget,
+    options: Parameters<FileSystem['moveFile']>[2],
+    signal?: AbortSignal,
+    sandboxPolicy?: SandboxExecutionPolicy,
+  ): Promise<FsMoveOutcome> {
+    if (source.targetKey === destination.targetKey) {
+      throw new FsError(`cannot move "${source.displayPath}" to itself`, 'FS_SAME_TARGET')
+    }
+    assertMutationAllowed(this.mapper, source, sandboxPolicy)
+    assertMutationAllowed(this.mapper, destination, sandboxPolicy)
+    return this.withLock(String(source.targetKey), async () => {
+      throwIfAborted(signal, 'move')
+      const sourceInfo = await this.probe(source, true)
+      const expectedSource = options.expectedSource
+      if (sourceInfo === undefined || (expectedSource !== undefined && sourceInfo.version !== expectedSource.version)) {
+        throw new FsError(`cannot move "${source.displayPath}": file changed since it was read`, 'FS_STALE_VERSION')
+      }
+      if (resourceType(sourceInfo.resolved.type) !== 'file') {
+        throw new FsError(`cannot move "${source.displayPath}": not a regular file`, 'FS_NOT_REGULAR_FILE')
+      }
+      const stored = await this.readText(source, signal)
+      const sourceBefore = normalizeLineEndings(stored)
+      const hunks = options.hunks ?? []
+      let destinationText = sourceBefore
+      if (hunks.length > 0) {
+        const patched = applyHunks(sourceBefore, hunks)
+        if (!patched.ok) {
+          throw new FsError(`cannot move "${source.displayPath}": hunk at patch line ${patched.failure.hunkLineNumber} (${patched.failure.stage}) does not match`, 'FS_PATCH_MISMATCH')
+        }
+        destinationText = patched.after
+      }
+      const destinationStorage = usesCrlf(stored) ? destinationText.replaceAll('\n', '\r\n') : destinationText
+      try {
+        const client = await this.remote.getClient()
+        await client.resourceWrite({
+          uri: this.fileUrl(destination),
+          data: destinationStorage,
+          encoding: UTF8,
+          contentType: 'text/plain; charset=utf-8',
+        })
+        const afterProbe = await this.probe(destination, true)
+        if (afterProbe === undefined) throw new FsError(`move did not publish "${destination.displayPath}"`, 'FS_IO_ERROR')
+        try {
+          await client.resourceDelete({ uri: this.fileUrl(source), recursive: false })
+        } catch (error: unknown) {
+          const mapped = mapFsError('move', source.displayPath, error)
+          return {
+            sourceBefore,
+            destination: { operation: 'create' as const, version: afterProbe.version, before: null, after: destinationText },
+            sourceDeleted: false as const,
+            sourceFailure: { code: mapped.code, message: mapped.message },
+          }
+        }
+        return {
+          sourceBefore,
+          destination: { operation: 'create' as const, version: afterProbe.version, before: null, after: destinationText },
+          sourceDeleted: true as const,
+        }
+      } catch (error: unknown) {
+        if (error instanceof FsError) throw error
+        throw mapFsError('move', destination.displayPath, error)
+      }
     })
   }
 
