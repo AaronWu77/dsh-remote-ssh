@@ -200,6 +200,7 @@ export class RemoteSshDiagnostics {
           sshTarget: server.sshTarget, sshExecutable: executable, sshArgs: args,
           remoteCodeCommand: server.remoteCodeCommand ?? 'code', remoteRuntimeRoot: '/tmp/dsh-remote-ssh',
           startupTimeoutMs: Math.min(spec.startupTimeoutMs, this.policy.timeoutMs), requestTimeoutMs: spec.requestTimeoutMs,
+          embeddedStartupTimeoutMs: spec.embeddedStartupTimeoutMs, standaloneStartupTimeoutMs: spec.standaloneStartupTimeoutMs,
           shutdownTimeoutMs: spec.shutdownTimeoutMs, protocolVersions: spec.protocolVersions,
         }, (id, status) => set(id, status, status === 'failed' ? id === 'agentHost' ? 'agent_host_failed' : id + '_failed' : undefined), true)
         if (controller.signal.aborted) abort()

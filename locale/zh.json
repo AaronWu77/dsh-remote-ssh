@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "远程 SSH",
+    "description": "将 SSH 主机作为工作区使用，集成文件、搜索、Shell 与侧栏。"
+  }
+}

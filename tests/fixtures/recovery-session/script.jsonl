@@ -1,0 +1,7 @@
+{"type":"user","text":"Read readme.txt; observe a disconnected read without replay, explicitly read again, observe a disconnected command without replay, then explicitly read again."}
+{"type":"call","id":"first-read","name":"read","arguments":{"file_path":"readme.txt"}}
+{"type":"call","id":"lost-read","name":"read","arguments":{"file_path":"readme.txt"},"disconnect":"read"}
+{"type":"call","id":"explicit-read","name":"read","arguments":{"file_path":"readme.txt"}}
+{"type":"call","id":"lost-command","name":"bash","arguments":{"description":"Run a command interrupted after dispatch","command":"printf should-not-replay"}}
+{"type":"call","id":"after-command-read","name":"read","arguments":{"file_path":"readme.txt"}}
+{"type":"assistant","text":"The failed read and command were not replayed. Explicit subsequent reads recovered."}

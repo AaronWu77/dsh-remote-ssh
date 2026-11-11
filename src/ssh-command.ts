@@ -27,7 +27,11 @@ export async function runCaptured(command: string, args: string[], timeoutMs: nu
     let failure: unknown
     const fail = (error: unknown): void => {
       failure ??= error
-      void stop(graceMs)
+      void stop(graceMs).catch(error => {
+        clearTimeout(timer)
+        signal.removeEventListener('abort', abort)
+        reject(error)
+      })
     }
     const append = (bucket: Buffer[], chunk: Buffer): void => {
       size += chunk.length

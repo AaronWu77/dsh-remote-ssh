@@ -1,4 +1,30 @@
+---
+kind: "package-bundle"
+description: "Use SSH hosts as workspaces with file, search, shell, and sidebar integration."
+---
+
 # dsh Remote SSH
+
+<a id="plugin-information"></a>
+## Plugin information
+
+Use SSH hosts as workspaces with file, search, shell, and sidebar integration.
+
+| Field | Value |
+|---|---|
+| Package | `dsh-remote-ssh` |
+| Checkout version | `0.2.4-aaron.12-sidebar.6` |
+| Maintained repository | [AaronWu77/dsh-remote-ssh](https://github.com/AaronWu77/dsh-remote-ssh) |
+| Package license | Apache-2.0 |
+
+Package identity, license and upstream declarations are maintained in [package.json](package.json). A checkout version does not establish a published release or verified compatibility; retain the existing qualification and deployment limits below.
+
+<a id="source-and-attribution"></a>
+## Source and attribution
+
+- [dsh-remote-ssh](https://github.com/Yan-Zero/dsh-remote-ssh) — adapted implementation; Apache-2.0; exact upstream baseline not recorded. Local DSH compatibility, Remote SSH workspace routing, diagnostics, and Better Sidebar integration. [Detailed record](https://github.com/AaronWu77/dsh-remote-ssh/blob/HEAD/UPGRADE.md).
+
+The maintained fork and the upstream project are different repositories. Original author, copyright, license and notice statements remain in force. A missing upstream baseline is left unrecorded rather than inferred from the local version.
 
 ## Isolated 0.2.1-rc.2 candidate qualification (2026-10-17)
 
@@ -28,11 +54,12 @@ Host-owned bootstrap and attachment paths map through the preserved local filesy
 - exposes binary workspace writes for artifact plugins such as `dsh-codex` image generation; raw bytes are base64-encoded only inside AHP `resourceWrite` transport;
 - keeps remote search results in POSIX path space and stores oversized tool results in a private runtime directory on the corresponding SSH host for follow-up `read`/`grep` access;
 - exposes `bash` for POSIX remote workspaces and `pwsh` for local Windows workspaces;
-- keeps conversation file links in Better Sidebar's active native editor; standalone or explicit external opening uses an installed VS Code-compatible editor through Remote SSH, with a local downloaded snapshot as fallback;
+- keeps conversation file links in Better Sidebar's active native editor; standalone or explicit external opening uses an installed VS Code-compatible editor through Remote SSH, with a local downloaded snapshot as fallback and a composer notice naming why the editor path was skipped;
 - integrates with Better Sidebar through a type-only `dsh-better-sidebar/workspace-provider` capability seam; when the Remote SSH manager is configured, it publishes the authoritative remote filesystem, Git and terminal backend through a lifecycle-owned router. A missing contribution fails closed with HTTP 503 rather than falling back to the local filesystem. Install the matched Remote SSH and Better Sidebar candidates only after stopping the Web service;
 - reuses one persistent SSH/AHP host connection while each Bash call opens its own terminal channel, like a new VS Code terminal tab;
 - shares one host-scoped SSH/AHP connection across workspaces on the same server;
-- preserves readable Workspace and Session history after a remote mapping is removed, while rejecting new tool calls from the old session.
+- preserves readable Workspace and Session history after a remote mapping is removed, while rejecting new tool calls from the old session;
+- keeps a workspace name set in the Workspace list across restarts and catalog changes.
 
 Remote workspaces currently support Linux hosts with readable `/proc`, `ps`, `awk`, and an external `kill` executable. The Sidebar bridge defaults to GNU `realpath`, `stat`, and `base64` for canonical paths and lexical symlink metadata; an AHP server that ignores `followSymlinks` cannot supply those facts. See [the bridge migration guide](docs/upgrade-guide/v0.2.4-aaron.11/sidebar-workspace/guide.md) before choosing `pathMetadata: ahp`. Windows and non-Linux POSIX SSH hosts are not supported.
 
@@ -40,15 +67,17 @@ Windows drive and UNC file addresses select the local host unless they match an 
 
 ## Agent Host compatibility
 
-This fork pins the official AHP SDK 1.0.0 and offers its supported protocols, `1.0.0` and `0.9.0`. It does not advertise `0.10.0`, `0.8.0`, or legacy `0.7.x`. An incompatible embedded candidate is stopped before the next candidate starts; a successful host connection remains active until disposal. A real Linux Agent Host negotiated `0.9.0` and passed UTF-8 writes, binary byte-range reads, and terminal execution.
+This fork pins the official AHP SDK 1.0.0 and offers its supported protocols, `1.0.0` and `0.9.0`. It does not advertise `0.10.0`, `0.8.0`, or legacy `0.7.x`. An incompatible embedded candidate is stopped before the next candidate starts; a successful host connection remains active until transport loss or disposal. A real Linux Agent Host negotiated `0.9.0` and passed UTF-8 writes, binary byte-range reads, and terminal execution.
 
 Set manager `protocolVersions: ["0.9.0"]` to restrict negotiation. Changing this list or connection timeouts invalidates host/workspace connection caches. Every SSH transport runs `-o BatchMode=yes` with `connectTimeoutMs` (default 10000, seconds-rounded on the command line), because no channel can answer an interactive prompt. Each startup attempt uses one deadline across all its candidates; expiry or disposal prevents further candidate and tunnel spawns in that attempt. Runtime `shutdownTimeoutMs` controls TERM grace and post-KILL settling. Embedded data is beneath `remoteRuntimeRoot`; cleanup validates the leader data directory and retains group-member birth identities through leader exit. Live group members must be gone before cleanup succeeds. A workspace may map any remote directory except the remote root `/`, which would claim every POSIX-absolute path on a POSIX host and is rejected at configuration validation.
 
-The directory picker shows a localized failure summary and expandable diagnostics. The Web provider accepts `maxErrorCharacters` (default 16384) and registers only where the composition provides `connection`: every route asks that service's browser-trust fence for a rejection first (401/403), so an unauthenticated or rebinding-shaped caller never reaches a handler. URL/CLI connection tokens are redacted. See [the fork upgrade guide](UPGRADE.md) before replacing the previous archive.
+The directory picker shows a localized failure summary and expandable diagnostics. Runtime lifecycle failures retain `connection_closed`, `candidate_startup_timeout` or `cleanup_failed` as a Web response code with HTTP 503; technical details remain bounded and token-redacted. The Web provider accepts `maxErrorCharacters` (default 16384) and registers only where the composition provides `connection`: every route asks that service's browser-trust fence for a rejection first (401/403), so an unauthenticated or rebinding-shaped caller never reaches a handler. URL/CLI connection tokens are redacted. See [the fork upgrade guide](UPGRADE.md) before replacing the previous archive.
 
 ## SSH execution diagnostics and custom configuration
 
 A silent nonzero startup exit retains its stage and SSH exit code. Failed embedded discovery reports `ssh_execution_failed`, not a missing Agent Host; only exit 0 with no candidates means no installed embedded host. Candidate compatibility failures remain `agent_host_unavailable`. Exit 255 alone is not an authentication diagnosis: inspect the bounded, token-redacted details and the local SSH launch environment first (including Windows `ProgramData`). The plugin does not repair launcher environment variables or automatically switch to Git SSH. A failed attempt leaves the connection retryable: once its owned cleanup succeeds, the next explicit request starts a new attempt with a fresh deadline, and requests already waiting share the attempt in flight. A failed cleanup keeps the failure visible and starts no further attempt. No file, search or terminal operation is replayed.
+
+A closed SSH tunnel, owned Agent Host process or AHP connection invalidates the successful client. After verified cleanup, the next explicit directory refresh or connection request shares one new attempt across concurrent callers; there is no background retry loop. Late close events from an old attempt cannot invalidate its successor. If cleanup cannot be confirmed, subsequent explicit requests may recheck cleanup but cannot start a replacement until ownership is resolved. Interrupted writes and commands remain failed or outcome-unknown; a new connection does not restore their terminal channels.
 
 Manager `sshConfigFile` controls both discovery and connections: runtime startup, tunnels, cleanup and the Web probe receive exactly one `-F <selected absolute path>`. With no selected file, no `-F` is injected and normal OpenSSH defaults apply. Existing server arguments (user, ProxyJump, identity) remain intact. When a custom file is selected, any server `sshArgs` config override (split, attached or grouped `-F`) is rejected, even if it names the same file; remove it and use the manager setting. Without a manager override, explicit server arguments remain supported. Changing the setting retires cached host/workspace transports and changes the multiplexing key. Runtime connect timeout remains 10 seconds by default; the Web probe retains 5 seconds.
 
@@ -123,7 +152,9 @@ The remote host needs:
 - `rg` for glob and grep tools;
 - a VS Code Agent Host supplied by the official VS Code CLI or an existing VS Code Server installation.
 
-The plugin checks `code` on PATH, its private `~/.dsh-remote-ssh/cli/bin/code` location, and compatible VS Code Server installations already cached on the host. It does not install remote packages silently.
+With the default `remoteCodeCommand: code`, the plugin first probes installed VS Code Server candidates newest-first and uses the first successful AHP negotiation. Only after installed candidates fail does it try `code` on PATH, or `~/.dsh-remote-ssh/cli/bin/code` when PATH has no `code`. An explicit custom command remains authoritative and does not select an installed substitute. The standalone CLI may download Agent Host; the plugin does not install remote system packages.
+
+Manager and runtime `embeddedStartupTimeoutMs` (15000) and `standaloneStartupTimeoutMs` (30000) bound each candidate through startup, tunneling and negotiation. Each phase also respects the remaining `startupTimeoutMs` (600000) total. All budgets must be positive safe integers; cleanup has its own bounded shutdown and request budgets. Changing a manager budget retires its cached host connections. See [the recovery upgrade guide](docs/upgrade-guide/v0.2.4-aaron.12-sidebar.6/connection-recovery/guide.md).
 
 ## Connection diagnostics
 

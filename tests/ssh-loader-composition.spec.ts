@@ -115,7 +115,7 @@ describe('built SSH transport through real YAML Loader', () => {
       const directory = await request(web.REMOTE_SSH_DIRECTORY_PATH, { serverId: 'fixture' })
       expect(directory.status).toBe(400)
       expect(directory.value.code).toBe('ssh_execution_failed')
-      expect(directory.value.error).toContain('standalone CLI (ssh exit 255)')
+      expect(directory.value.error).not.toContain('standalone CLI')
       expect(directory.value.error).toContain('embedded discovery (ssh exit 255)')
       expect(directory.value.error).not.toContain('no installed code-server')
       const preferences = await request(web.REMOTE_SSH_SETTINGS_PATH)
@@ -153,10 +153,12 @@ describe('built SSH transport through real YAML Loader', () => {
       const manager = ctx.remoteSshManager
       const workspace = await manager.workspaceContext(manager.workspace('project'))
       await expect(workspace.remote.getConnection()).rejects.toMatchObject({ code: 'ssh_execution_failed', exitCode: 255, stage: 'embedded discovery' })
-      await expect(workspace.remote.getConnection()).rejects.toThrow('standalone CLI (ssh exit 255)')
-      // Construction starts one round eagerly and each explicit call after a
-      // settled failure starts another, so three rounds of two commands run.
-      expect(calls).toHaveLength(6)
+      const failedRounds = calls.length
+      expect(failedRounds).toBeGreaterThan(0)
+      await expect(workspace.remote.getConnection()).rejects.toThrow('embedded discovery (ssh exit 255)')
+      // A later explicit request starts one discovery and no Agent Host after SSH failure.
+      expect(calls).toHaveLength(failedRounds + 1)
+      expect(calls.every(args => args.at(-1)!.includes('find "$HOME/.vscode-server'))).toBe(true)
       for (const args of calls) {
         expect(args.filter(arg => arg === '-F')).toHaveLength(1)
         expect(args[args.indexOf('-F') + 1]).toBe(config)

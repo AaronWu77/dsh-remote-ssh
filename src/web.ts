@@ -6,7 +6,7 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { RemoteOpenFileMode, RemoteSshManager, RemoteSshServer } from './manager.ts'
 import { openRemoteFile } from './open-file.ts'
 import z from '@deepseek-ai/schemastery'
-import { AgentHostConnectionError, SshExecutionError, formatConnectionDiagnostic } from './connection-error.ts'
+import { AgentHostConnectionError, RemoteSshLifecycleError, SshExecutionError, formatConnectionDiagnostic } from './connection-error.ts'
 import { appendSshHost, defaultSshConfigFiles, discoverSshConfigHosts } from './ssh-config.ts'
 import { RemoteSshDiagnostics, parseDiagnosticId, parseDiagnosticRequest } from './diagnostics.ts'
 import { RemoteSshManagementError } from './management-error.ts'
@@ -200,7 +200,11 @@ async function catalogState(manager: RemoteSshManager) {
   }
   return {
     servers,
-    workspaces: snapshot.workspaces.map(workspace => ({ ...workspace, aliasPath: manager.workspace(workspace.id).aliasPath })),
+    workspaces: snapshot.workspaces.map((workspace) => {
+      const route = manager.workspace(workspace.id)
+      const title = manager.workspaceTitle(route)
+      return { ...workspace, aliasPath: route.aliasPath, ...(title === undefined ? {} : { title }) }
+    }),
     serverCount: servers.length,
     discoveredServerCount: discovery.hosts.length,
     workspaceCount: snapshot.workspaces.length,
@@ -255,7 +259,9 @@ function registerRoute(
       try {
         await handler(req, res)
       } catch (error: unknown) {
-        json(res, error instanceof RemoteSshManagementError ? error.status : 400, { error: safeMessage(error, maxErrorCharacters), ...(error instanceof AgentHostConnectionError || error instanceof SshExecutionError || error instanceof RemoteSshManagementError ? { code: error.code } : {}) })
+        const status = error instanceof RemoteSshManagementError ? error.status : error instanceof RemoteSshLifecycleError ? 503 : 400
+        const classified = error instanceof AgentHostConnectionError || error instanceof SshExecutionError || error instanceof RemoteSshManagementError || error instanceof RemoteSshLifecycleError
+        json(res, status, { error: safeMessage(error, maxErrorCharacters), ...(classified ? { code: error.code } : {}) })
       }
     },
   })

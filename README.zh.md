@@ -1,4 +1,30 @@
+---
+kind: "package-bundle"
+description: "将 SSH 主机作为工作区使用，集成文件、搜索、Shell 与侧栏。"
+---
+
 # dsh Remote SSH
+
+<a id="plugin-information"></a>
+## 插件信息
+
+将 SSH 主机作为工作区使用，集成文件、搜索、Shell 与侧栏。
+
+| 字段 | 内容 |
+|---|---|
+| 包名 | `dsh-remote-ssh` |
+| 当前 checkout 版本 | `0.2.4-aaron.12-sidebar.6` |
+| 维护仓库 | [AaronWu77/dsh-remote-ssh](https://github.com/AaronWu77/dsh-remote-ssh) |
+| 包许可证 | Apache-2.0 |
+
+包身份、许可证和上游声明以 [package.json](package.json) 为准。checkout 版本不代表已发布版本或经过验证的兼容性；下文已有的验证范围与部署限制仍然适用。
+
+<a id="source-and-attribution"></a>
+## 来源与归属
+
+- [dsh-remote-ssh](https://github.com/Yan-Zero/dsh-remote-ssh) — 基于上游改造; Apache-2.0; 未记录精确上游基准。 本地 DSH 兼容、远程工作区路由、连接诊断与 Better Sidebar 集成。 [详细记录](https://github.com/AaronWu77/dsh-remote-ssh/blob/HEAD/UPGRADE.md)。
+
+维护中的 fork 与上游项目属于不同仓库。原作者、版权、许可证与通知声明继续保留；缺失的上游基准不根据本地版本推断。
 
 ## 0.2.1-rc.2 隔离候选资格（2026-10-17）
 
@@ -28,11 +54,12 @@
 - 为 `dsh-codex` 生图等制品插件提供二进制工作区写入；原始字节只在 AHP `resourceWrite` 传输内部编码为 base64；
 - 远端搜索结果始终使用 POSIX 路径；超长工具结果保存在对应 SSH 主机的私有运行目录，可继续用 `read`/`grep` 分页读取；
 - POSIX 远端工作区只显示 `bash`，Windows 本机工作区只显示 `pwsh`；
-- Better Sidebar 原生编辑器启用时，对话文件链接在该编辑器内预览；单独使用或显式外部打开时，通过本机 VSC 兼容编辑器的 Remote SSH 打开，不可用时下载本地快照；
+- Better Sidebar 原生编辑器启用时，对话文件链接在该编辑器内预览；单独使用或显式外部打开时，通过本机 VSC 兼容编辑器的 Remote SSH 打开，不可用时下载本地快照，并在输入区说明为何没有打开编辑器；
 - 通过只供类型导入的 `dsh-better-sidebar/workspace-provider` 能力接口接入 Better Sidebar；配置 Remote SSH manager 时，以受生命周期管理的路由发布权威远端文件系统、Git 和终端后端。缺少联动贡献时会返回 HTTP 503，不会回退本机文件系统。停止 Web 服务后才能一起安装配套 Remote SSH 和 Better Sidebar 候选包；
 - 每台服务器复用一条 SSH/AHP 长连接；每次 Bash 调用像 VS Code 新建终端标签页一样打开独立 channel，不会重新进行 SSH 握手；
 - 同一服务器上的多个工作区共享一个 host 级 SSH/AHP 连接；
-- 删除远端映射后保留可阅读的 Workspace 与 Session 历史，但旧会话不能继续调用工具。
+- 删除远端映射后保留可阅读的 Workspace 与 Session 历史，但旧会话不能继续调用工具；
+- 在工作区列表里起的名字在重启和配置变更后仍然保留。
 
 远端工作区目前支持具有可读 `/proc`、`ps`、`awk` 及外部 `kill` 可执行文件的 Linux 主机。侧栏桥接默认使用 GNU `realpath`、`stat` 和 `base64` 获取规范路径和链接本身的元数据；忽略 `followSymlinks` 的 AHP 服务端无法提供这些事实。选择 `pathMetadata: ahp` 前，请阅读[桥接迁移指南](docs/upgrade-guide/v0.2.4-aaron.11/sidebar-workspace/guide.zh.md)。不支持 Windows 或其他非 Linux POSIX SSH 主机。
 
@@ -40,15 +67,17 @@ Windows 盘符与 UNC 文件地址属于本地主机，除非明确匹配已登�
 
 ## Agent Host 兼容性
 
-此 fork 固定使用官方 AHP SDK 1.0.0，声明该 SDK 支持的 `1.0.0` 和 `0.9.0` 协议；不声明 `0.10.0`、`0.8.0` 或旧 `0.7.x`。不兼容的嵌入式候选会先停止，再尝试下一候选；成功连接会保留到插件释放。真实 Linux Agent Host 已协商 `0.9.0`，并通过 UTF-8 写入、二进制字节范围读取及终端执行测试。
+此 fork 固定使用官方 AHP SDK 1.0.0，声明该 SDK 支持的 `1.0.0` 和 `0.9.0` 协议；不声明 `0.10.0`、`0.8.0` 或旧 `0.7.x`。不兼容的嵌入式候选会先停止，再尝试下一候选；成功连接会保留到传输断开或插件释放。真实 Linux Agent Host 已协商 `0.9.0`，并通过 UTF-8 写入、二进制字节范围读取及终端执行测试。
 
 manager 的 `protocolVersions: ["0.9.0"]` 可限制协商版本。修改版本列表或连接超时会清空 host/workspace 连接缓存。所有 SSH 传输都带 `-o BatchMode=yes` 与 `connectTimeoutMs`（默认 10000，按秒取整写入命令行），因为没有任何通道能回答交互式提示。每一轮启动尝试为自己的全部候选共用一次启动期限；超时或释放后不会再启动该轮的候选或隧道。runtime 的 `shutdownTimeoutMs` 控制 TERM 宽限及 KILL 后等待时间。嵌入式数据位于 `remoteRuntimeRoot` 下；清理会验证组长的数据目录，并在组长退出后保留成员的启动身份。仅在进程组不再有存活成员时报告清理成功。工作区可映射远端任意目录，但不能映射远端根 `/`：在 POSIX 主机上它会认领所有 POSIX 绝对路径，因此在配置校验阶段即被拒绝。
 
-目录选择器显示本地化错误摘要和可展开详情。Web provider 的 `maxErrorCharacters` 默认值为 16384，且只在组合提供了 `connection` 时注册路由：每个路由先向该服务的浏览器信任栅栏要一个拒绝（401/403），未认证或形似 DNS rebinding 的调用者无法进入任何处理函数。URL/CLI 连接令牌会被遮盖。替换旧安装包前，请阅读 [fork 升级指南](UPGRADE.md)。
+目录选择器显示本地化错误摘要和可展开详情。运行时生命周期失败在 Web 响应中保留 `connection_closed`、`candidate_startup_timeout` 或 `cleanup_failed` 错误码，并使用 HTTP 503；技术详情仍有长度上限且连接令牌已遮盖。Web provider 的 `maxErrorCharacters` 默认值为 16384，且只在组合提供了 `connection` 时注册路由：每个路由先向该服务的浏览器信任栅栏要一个拒绝（401/403），未认证或形似 DNS rebinding 的调用者无法进入任何处理函数。URL/CLI 连接令牌会被遮盖。替换旧安装包前，请阅读 [fork 升级指南](UPGRADE.md)。
 
 ## SSH 执行诊断与自定义配置
 
 启动进程无输出但非零退出时，仍保留阶段和 SSH 退出码。嵌入式发现执行失败返回 `ssh_execution_failed`，不能解释为未安装 Agent Host；仅退出码 0 且候选列表为空才代表没有已安装的嵌入式 Host。候选协议兼容性失败仍为 `agent_host_unavailable`。仅凭退出码 255 不能认定认证失败：应先检查有长度上限且连接令牌已遮盖的详情，以及本机 SSH 启动环境（包括 Windows 的 `ProgramData`）。插件不会修复启动器环境变量，也不会自动切换到 Git SSH。一次失败不会让连接永久失效：本次清理成功后，下一次显式请求会以新的期限启动新一轮尝试，已在等待的请求共享进行中的那一轮。清理失败时该失败保持可见，且不会开始新的尝试。不会重放任何文件、搜索或终端操作。
+
+SSH 隧道、自有 Agent Host 进程或 AHP 连接关闭后，已成功连接的客户端即失效。清理确认完成后，下一次显式目录刷新或连接请求启动新一轮尝试，并发请求共享该轮连接；没有后台重试循环。旧尝试迟到的关闭事件不会影响后继连接。无法确认清理时，后续显式请求可重新检查清理，但在资源身份得到确认前不能启动替代连接。中断的写入和命令仍按失败或结果未知处理；新连接不会恢复其终端通道。
 
 manager 的 `sshConfigFile` 同时控制发现和实际连接：runtime 启动、隧道、清理及 Web 测试统一传入一个 `-F <所选绝对路径>`。未设置时不额外传入 `-F`，沿用 OpenSSH 默认配置。服务器现有的用户、ProxyJump、身份文件参数保持不变。选择自定义文件后，服务器 `sshArgs` 中分离、紧连或组合形式的 `-F` 均被拒绝，即使文件相同；请移除该参数，改用 manager 设置。未选择 manager 覆盖时，仍支持显式服务器参数。更改该设置会释放缓存的 host/workspace 传输并更换复用连接键。runtime 连接超时默认仍为 10 秒，Web 测试仍为 5 秒。
 
@@ -120,7 +149,9 @@ Codex、Claude Code 及其他自动化 Agent 应直接遵循 [INSTALL.md](INSTAL
 - 为 glob 和 grep 工具提供的 `rg`；
 - 由官方 VS Code CLI 或已有 VS Code Server 提供的 VS Code Agent Host。
 
-插件会依次检查 PATH 中的 `code`、私有位置 `~/.dsh-remote-ssh/cli/bin/code`，以及主机上已经缓存的兼容 VS Code Server。插件不会静默安装远端软件包。
+默认使用 `remoteCodeCommand: code` 时，插件先按新到旧探测已安装的 VS Code Server 候选，以实际 AHP 协商成功的首个候选建立连接。已安装候选全部失败后才尝试 PATH 中的 `code`；PATH 没有 `code` 时使用 `~/.dsh-remote-ssh/cli/bin/code`。显式自定义命令保持权威，不会被已安装候选替换。standalone CLI 可能下载 Agent Host；插件不会安装远端系统软件包。
+
+manager 与 runtime 的 `embeddedStartupTimeoutMs`（15000）和 `standaloneStartupTimeoutMs`（30000）限制每个候选的启动、隧道及协商阶段；各阶段也受 `startupTimeoutMs`（600000）剩余总预算限制。所有预算必须是正安全整数；清理另受有界的关闭及请求预算限制。修改 manager 预算会释放缓存的主机连接。详见[连接恢复升级指南](docs/upgrade-guide/v0.2.4-aaron.12-sidebar.6/connection-recovery/guide.zh.md)。
 
 ## 连接诊断
 

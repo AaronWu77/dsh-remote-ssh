@@ -14,6 +14,12 @@ describe('Remote SSH client wire validation', () => {
     expect(parseCatalogState(catalog)).toEqual(catalog)
   })
 
+  it('carries the workspace title the catalog supplies', () => {
+    const workspace = { id: 'project', serverId: 'dev', remotePath: '/srv/project', aliasPath: 'D:/aliases/project', title: '后端项目' }
+    expect(parseCatalogState({ ...emptyCatalog, workspaces: [workspace] }).workspaces).toEqual([workspace])
+    expect(parseCatalogState({ ...emptyCatalog, workspaces: [{ ...workspace, title: '' }] }).workspaces[0]).not.toHaveProperty('title')
+  })
+
   it('rejects a catalog whose entries are incomplete', () => {
     expect(() => parseCatalogState(null)).toThrow('malformed')
     expect(() => parseCatalogState({ ...emptyCatalog, servers: [{ id: 'dev', label: 'Devbox', sshTarget: 'devbox' }] })).toThrow('malformed')

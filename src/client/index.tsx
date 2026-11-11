@@ -32,7 +32,7 @@ export function apply(ctx: ClientContext): void {
   const namespace = 'settings.remote-ssh'
   ctx.effect(() => ctx.locale.register(namespace, { zh, en }), 'dsh-remote-ssh: client copy')
   const t = ctx.locale.bind(namespace) as RemoteWorkspaceFlowInjected['t']
-  installRemoteOpenPath(ctx)
+  installRemoteOpenPath(ctx, t)
 
   const injected = (): RemoteWorkspaceFlowInjected => ({
     t,

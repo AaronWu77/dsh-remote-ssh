@@ -123,7 +123,7 @@ export function RemoteSshSettings({ t, listLocal }: RemoteWorkspaceFlowInjected)
       <h3 className={css.sectionTitle}>{t('remoteWorkspaces')}</h3>
       {state.workspaces.map(workspace => <div key={workspace.id} className={css.record}>
         <div className={css.recordText}>
-          <span className={css.recordTitle}>{state.servers.find(server => server.id === workspace.serverId)?.label ?? workspace.serverId}</span>
+          <span className={css.recordTitle}>{workspace.title ?? state.servers.find(server => server.id === workspace.serverId)?.label ?? workspace.serverId}</span>
           <p className={css.detail}>{workspace.remotePath}</p>
         </div>
         {pendingRemoval === workspace.id ? <div className={css.stack}>

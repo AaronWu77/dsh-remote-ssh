@@ -51,7 +51,7 @@ describe('total Agent Host startup deadline', () => {
     try {
       const runtime = createRuntime(ctx)
       await expect(runtime.getConnection()).rejects.toThrow('total Agent Host startup deadline exceeded')
-      expect(fixture.calls).toHaveLength(2)
+      expect(fixture.calls).toHaveLength(1)
       expect(fixture.calls.filter(command => command.includes('exec "$dsh_code_server"'))).toHaveLength(0)
     } finally { await ctx.fiber.dispose() }
   })

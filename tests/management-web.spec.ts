@@ -4,6 +4,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { describe, expect, it, vi } from 'vitest'
 import { apply, REMOTE_SSH_SETTINGS_PATH, REMOTE_SSH_DIAGNOSTIC_START_PATH, REMOTE_SSH_DIAGNOSTIC_STATUS_PATH, REMOTE_SSH_DIAGNOSTIC_CANCEL_PATH } from '../src/web.ts'
 import { RemoteSshManagementError } from '../src/management-error.ts'
+import { RemoteSshLifecycleError } from '../src/connection-error.ts'
 
 const paths = [REMOTE_SSH_SETTINGS_PATH, REMOTE_SSH_DIAGNOSTIC_START_PATH, REMOTE_SSH_DIAGNOSTIC_STATUS_PATH, REMOTE_SSH_DIAGNOSTIC_CANCEL_PATH]
 async function fixture(rejection: 401 | 403 | undefined, run: (request: (path: string, method: string, body: object) => Promise<{ status: number; body: Record<string, unknown> }>, save: ReturnType<typeof vi.fn>, state: ReturnType<typeof vi.fn>) => Promise<void>) {
@@ -40,6 +41,17 @@ describe('management HTTP admission',()=>{
       expect(await request(REMOTE_SSH_SETTINGS_PATH,'POST',{expectedRevision:'old',openFileMode:'download'})).toEqual({status:409,body:{code:'settings_conflict',error:'Reload settings'}})
     })
   })
+  it.each(['connection_closed', 'candidate_startup_timeout', 'cleanup_failed'] as const)('returns actionable lifecycle identity without exposing tokens (%s)', async code => {
+    await fixture(undefined, async (request, save) => {
+      save.mockRejectedValue(new RemoteSshLifecycleError(code, 'Remote connection unavailable; retry after cleanup ws://localhost/?tkn=SECRET'))
+      const result = await request(REMOTE_SSH_SETTINGS_PATH, 'POST', { expectedRevision: 'r1' })
+      expect(result.status).toBe(503)
+      expect(result.body.code).toBe(code)
+      expect(result.body.error).toContain('retry after cleanup')
+      expect(result.body.error).not.toContain('SECRET')
+    })
+  })
+
   it('rejects malformed ids/options before touching a host or starting SSH',async()=>{
     await fixture(undefined,async(request,save)=>{
       for(const path of paths.slice(1))expect((await request(path,'POST',{id:'../bad'})).status).toBe(400)

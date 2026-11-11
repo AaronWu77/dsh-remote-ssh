@@ -32,6 +32,21 @@ describe('remote file opening', () => {
     await expect(findWindowsVscCli(executable)).resolves.toBe(cli)
   })
 
+  it('prefers the CLI the installed code.cmd shim launches over a staged update', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'dsh-vsc-cli-shim-'))
+    cleanup.push(root)
+    const executable = resolve(root, 'Code.exe')
+    const running = resolve(root, 'aaa', 'resources', 'app', 'out', 'cli.js')
+    const staged = resolve(root, 'zzz', 'resources', 'app', 'out', 'cli.js')
+    for (const target of [running, staged]) {
+      await mkdir(dirname(target), { recursive: true })
+      await writeFile(target, '')
+    }
+    await mkdir(resolve(root, 'bin'), { recursive: true })
+    await writeFile(resolve(root, 'bin', 'code.cmd'), '"%~dp0..\\Code.exe" "%~dp0..\\aaa\\resources\\app\\out\\cli.js" %*')
+    await expect(findWindowsVscCli(executable)).resolves.toBe(running)
+  })
+
   it('downloads exact bytes when native Remote SSH opening is unavailable by policy', async () => {
     const workspaceId = 'workspace-open-test'
     cleanup.push(resolve(tmpdir(), 'dsh-remote-ssh', 'open-file', workspaceId))
@@ -76,5 +91,46 @@ describe('remote file opening', () => {
     expect(safeDownloadedName('/tmp/report.pdf')).toBe('report.pdf')
     expect(safeDownloadedName('/tmp/CON.txt')).toBe('_CON.txt')
     expect(safeDownloadedName('/tmp/a:b?.txt')).toBe('a_b_.txt')
+  })
+
+  it.skipIf(process.platform !== 'win32')('finds a Windows editor installed behind a code.cmd shim', async () => {
+    const install = await mkdtemp(resolve(tmpdir(), 'dsh-vsc-install-'))
+    cleanup.push(install)
+    const bin = resolve(install, 'bin')
+    const cli = resolve(install, 'commit', 'resources', 'app', 'out', 'cli.js')
+    await mkdir(bin, { recursive: true })
+    await mkdir(dirname(cli), { recursive: true })
+    await writeFile(cli, '')
+    await writeFile(resolve(install, 'Code.exe'), '')
+    await writeFile(resolve(bin, 'code.cmd'), '"%~dp0..\\Code.exe" "%~dp0..\\commit\\resources\\app\\out\\cli.js" %*')
+    const originalPath = process.env.PATH
+    process.env.PATH = bin
+    const workspaceId = 'workspace-shim-test'
+    cleanup.push(resolve(tmpdir(), 'dsh-remote-ssh', 'open-file', workspaceId))
+    const bytes = Uint8Array.from([0x41])
+    const route = {
+      kind: 'remote',
+      server: { id: 'server', label: 'Server', sshTarget: 'test-host' },
+      workspace: { id: workspaceId, serverId: 'server', remotePath: '/srv/project' },
+      aliasPath: 'C:\\aliases\\project',
+      mapper: new WorkspacePathMapper('C:\\aliases\\project', '/srv/project'),
+    } satisfies RemoteWorkspaceRoute
+    const manager = {
+      workspace: vi.fn(() => route),
+      snapshot: vi.fn(() => ({ openFileMode: 'vscode', openFileDownloadMaxBytes: 1024 })),
+      workspaceContext: vi.fn(async () => ({
+        fs: {
+          resolve: vi.fn(async () => ({ targetKey: 'file:///srv/project/a.txt', displayPath: '/srv/project/a.txt' })),
+          stat: vi.fn(async () => ({ type: 'file', size: bytes.byteLength })),
+          readBytes: vi.fn(async () => bytes),
+        },
+      })),
+    } as unknown as RemoteSshManager
+    try {
+      const result = await openRemoteFile(manager, workspaceId, '/srv/project/a.txt')
+      expect(result).toMatchObject({ kind: 'download', fallbackReason: 'vscode does not have a Remote SSH extension' })
+    } finally {
+      process.env.PATH = originalPath
+    }
   })
 })

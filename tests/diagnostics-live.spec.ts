@@ -22,7 +22,7 @@ describe.skipIf(!target)('real SSH diagnostics', () => {
     let owned = 0
     const manager: Pick<RemoteSshManager, 'snapshot' | 'transportFor' | 'ownDiagnostic'> = {
       snapshot:()=>({ aliasRoot:'/unused', servers:[server], workspaces:[], retiredAliases:[], openFileMode:'auto',
-        openFileDownloadMaxBytes:1024, startupTimeoutMs:90000, requestTimeoutMs:15000, shutdownTimeoutMs:3000, connectTimeoutMs:10000, protocolVersions:['1.0.0','0.9.0'] }),
+        openFileDownloadMaxBytes:1024, startupTimeoutMs:90000, embeddedStartupTimeoutMs:15000, standaloneStartupTimeoutMs:30000, requestTimeoutMs:15000, shutdownTimeoutMs:3000, connectTimeoutMs:10000, protocolVersions:['1.0.0','0.9.0'] }),
       transportFor:()=>({executable:'ssh',args:['-o','BatchMode=yes','-o','ConnectTimeout=10'],multiplexed:false}),
       ownDiagnostic:()=>{owned++;return()=>{owned--}},
     }

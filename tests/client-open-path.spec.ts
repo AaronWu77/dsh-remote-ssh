@@ -4,6 +4,7 @@ import { absoluteFileAddress, sessionFileAddress } from '@deepseek-ai/dsh-util-w
 import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { emptyCatalog, fetchCatalogState, OPEN_FILE_PATH, request } from '../src/client/api.ts'
 import { installRemoteOpenPath } from '../src/client/open-path.ts'
+import type { Translate } from '../src/client/types.ts'
 
 vi.mock('../src/client/api.ts', async importOriginal => ({
   ...await importOriginal<typeof import('../src/client/api.ts')>(),
@@ -34,17 +35,23 @@ function fixture(withRegistry = false) {
     expect(ctx.get('sidebarRightTabs')).toBeUndefined()
     expect(tabs.entries()).toEqual([])
   })
+  const scopes = new Map<string, Context>()
+  const notify = vi.fn<(level: 'info' | 'error', text: string) => void>()
   Object.defineProperties(ctx, {
     sidebarRight: { value: sidebar },
-    sessions: { value: { list: { getSnapshot: () => ({
-      byId: { source: { id: 'source', cwd: 'D:/aliases/dev' }, selected: { id: 'selected', cwd: 'D:/local' } },
-    }) } } },
+    sessions: { value: {
+      list: { getSnapshot: () => ({
+        byId: { source: { id: 'source', cwd: 'D:/aliases/dev' }, selected: { id: 'selected', cwd: 'D:/local' } },
+      }) },
+      scope: (id: string) => scopes.get(id),
+    } },
   })
+  const t: Translate = (key, params) => String(params?.reason ?? key)
   const tabs = new SidebarRightTabRegistry(ctx)
   if (withRegistry) ctx.effect(() => ctx.reflect.provide('sidebarRightTabs', tabs))
-  installRemoteOpenPath(ctx)
+  installRemoteOpenPath(ctx, t)
   return {
-    ctx, sidebar, original, originalIn, tabs,
+    ctx, sidebar, original, originalIn, tabs, notify, scopes,
     hold<T>(cleanupValue: T) {
       const completion = Promise.withResolvers<T>()
       completions.push({ release: () => { completion.resolve(cleanupValue) }, promise: completion.promise.then(() => undefined, () => undefined) })
@@ -123,6 +130,21 @@ describe('remote file resource navigation', () => {
     expect(request).toHaveBeenCalledWith(OPEN_FILE_PATH, 'POST', { workspaceId: 'dev', path: 'D:/aliases/dev/README.md' }, expect.any(AbortSignal))
     expect(original).toHaveBeenCalledExactlyOnceWith(absoluteFileAddress(localPath), options)
     expect(original.mock.calls[0]?.[1]).toBe(options)
+  })
+
+  it('explains a local-copy fallback through the owning Session composer notice', async () => {
+    const { sidebar, original, notify, scopes } = fixture()
+    scopes.set('source', { get: (name: string) => name === 'conversation' ? { input: { for: () => ({ notify }) } } : undefined } as never)
+    const opened = Promise.withResolvers<void>()
+    original.mockImplementation(() => { opened.resolve() })
+    vi.mocked(request).mockResolvedValue({
+      kind: 'download',
+      localPath: 'C:/Temp/dsh-remote-ssh/open-file/dev/digest/README.md',
+      fallbackReason: 'no supported VS Code-compatible editor was found',
+    })
+    sidebar.openResource(sessionFileAddress('source', 'README.md'))
+    await opened.promise
+    expect(notify).toHaveBeenCalledExactlyOnceWith('info', 'no supported VS Code-compatible editor was found')
   })
 
   it.each(['disabled', 'different editor', 'different role'])('keeps external routing when the native editor is %s', async mode => {

@@ -19,6 +19,11 @@ const state = vi.hoisted(() => ({
   cleanupCode: 0,
   cleanupGate: undefined as Promise<void> | undefined,
   negotiations: 0,
+  tunnelClosers: [] as Array<() => void>,
+  embeddedClosers: [] as Array<() => void>,
+  staleClosers: [] as Array<() => void>,
+  remoteClosers: [] as Array<() => void>,
+  closeOnPublished: false,
   active: new Set<object>(),
   tasks: [] as Promise<void>[],
 }))
@@ -37,14 +42,21 @@ vi.mock('node:child_process', async () => {
     const command = args.at(-1)!
     queueMicrotask(() => {
       // A tunnel stays open for the lifetime of the connection.
-      if (args.includes('-N')) return
+      if (args.includes('-N')) {
+        state.tunnelClosers.push(() => child.close(null))
+        const callbacks = child.listeners('close')
+        state.staleClosers.push(() => { for (const callback of callbacks) callback(null) })
+        return
+      }
       if (command.includes('find "$HOME/.vscode-server')) {
         state.discoveryRuns += 1
+        state.rounds += 1
         if (state.hangDiscovery) return
         if (state.rounds <= state.failRounds && state.failAt === 'ssh') { child.close(255); return }
         child.stdout.write('/cache/server/bin/code-server\n'); child.close(0); return
       }
       if (command.includes('exec "$dsh_code_server"')) {
+        state.embeddedClosers.push(() => child.close(null))
         child.stdout.write('DSH_AGENT_HOST_PID=12345\nAgent host server listening on 127.0.0.1:45678\n'); return
       }
       if (command.startsWith('cat ')) { child.stdout.write('fixture-token'); child.close(0); return }
@@ -54,7 +66,7 @@ vi.mock('node:child_process', async () => {
         return
       }
       // The standalone VS Code CLI is absent on this remote, as in the reported failure.
-      state.rounds += 1
+      child.stdout.write('DSH_AGENT_HOST_PID=12345\n')
       child.stderr.write('ssh: connect to host fixture.invalid port 22: Connection timed out\n')
       child.close(255)
     })
@@ -83,6 +95,7 @@ vi.mock('../src/ssh-lifecycle.ts', async importOriginal => {
   return { ...real, connectOwnedWebSocket: async () => {
     if (state.rounds <= state.failRounds && state.failAt === 'connect') throw new Error('fixture transport refused')
     const [client, server] = InMemoryTransport.pair()
+    state.remoteClosers.push(() => { void server.close() })
     state.negotiations += 1
     state.tasks.push((async () => {
       for (;;) {
@@ -102,10 +115,12 @@ vi.mock('../src/ssh-lifecycle.ts', async importOriginal => {
 afterEach(async () => {
   await Promise.all(state.tasks)
   state.tasks = []
+  vi.restoreAllMocks()
   expect(state.active.size).toBe(0)
   Object.assign(state, {
     failAt: 'ssh', failRounds: 1, hangDiscovery: false, rounds: 0, discoveryRuns: 0,
     cleanupRuns: 0, cleanupCode: 0, cleanupGate: undefined, negotiations: 0,
+    tunnelClosers: [], embeddedClosers: [], staleClosers: [], remoteClosers: [], closeOnPublished: false,
   })
 })
 
@@ -115,6 +130,8 @@ function runtime(ctx: Context): RemoteSshRuntime {
     remoteCodeCommand: 'code', remoteRuntimeRoot: '/tmp/retry-fixture',
     startupTimeoutMs: 60_000, shutdownTimeoutMs: 1, requestTimeoutMs: 1_000,
     protocolVersions: ['0.9.0'],
+  }, (stage, status) => {
+    if (state.closeOnPublished && stage === 'protocol' && status === 'succeeded') state.tunnelClosers.at(-1)?.()
   })
 }
 
@@ -131,6 +148,81 @@ async function until(predicate: () => boolean): Promise<void> {
 }
 
 describe('failed startup recovery', () => {
+  it('invalidates a fulfilled ready after SDK client shutdown and shares the next demand reconnect', async () => {
+    state.failRounds = 0
+    const ctx = new Context()
+    try {
+      const ssh = runtime(ctx)
+      const first = await ssh.getConnection()
+      await first.client.shutdown()
+      const [second, concurrent] = await Promise.all([ssh.getConnection(), ssh.getConnection()])
+      expect(second.client).not.toBe(first.client)
+      expect(concurrent).toBe(second)
+      expect(state.negotiations).toBe(2)
+      expect(state.cleanupRuns).toBe(1)
+    } finally { await ctx.fiber.dispose() }
+  })
+
+  it.each(['tunnel', 'embedded', 'remote'] as const)('joins cleanup after %s close before one demand reconnect, ignoring stale close callbacks', async source => {
+    state.failRounds = 0
+    const gate = deferred()
+    const ctx = new Context()
+    try {
+      const ssh = runtime(ctx)
+      const first = await ssh.getConnection()
+      state.cleanupGate = gate.promise
+      const close = source === 'tunnel' ? state.tunnelClosers[0] : source === 'embedded' ? state.embeddedClosers[0] : state.remoteClosers[0]
+      close!()
+      await until(() => state.cleanupRuns === 1)
+      expect(state.discoveryRuns).toBe(1)
+      const pending = ssh.getConnection()
+      const concurrent = ssh.getConnection()
+      await Promise.resolve()
+      expect(state.discoveryRuns).toBe(1)
+      gate.resolve()
+      const second = await pending
+      expect(await concurrent).toBe(second)
+      expect(second.client).not.toBe(first.client)
+      expect(state.discoveryRuns).toBe(2)
+      state.staleClosers[0]!()
+      expect(await ssh.getConnection()).toBe(second)
+      expect(state.discoveryRuns).toBe(2)
+    } finally { gate.resolve(); await ctx.fiber.dispose() }
+  })
+
+  it('never publishes a client when its tunnel closes between handshake and publication', async () => {
+    state.failRounds = 0
+    state.closeOnPublished = true
+    const ctx = new Context()
+    try {
+      const ssh = runtime(ctx)
+      await expect(ssh.getConnection()).rejects.toMatchObject({ code: 'connection_closed' })
+      expect(state.negotiations).toBe(1)
+      expect(state.cleanupRuns).toBe(1)
+      state.closeOnPublished = false
+      expect((await ssh.getConnection()).client.connectionState.status).toBe('connected')
+    } finally { await ctx.fiber.dispose() }
+  })
+
+  it('retries failed ownership verification on a later explicit call before starting a successor', async () => {
+    state.failRounds = 0
+    const ctx = new Context()
+    try {
+      const ssh = runtime(ctx)
+      await ssh.getConnection()
+      state.cleanupCode = 1
+      state.tunnelClosers[0]!()
+      await until(() => state.cleanupRuns === 1 && state.active.size === 0)
+      await expect(ssh.getConnection()).rejects.toMatchObject({ code: 'cleanup_failed' })
+      expect(state.discoveryRuns).toBe(1)
+      state.cleanupCode = 0
+      const [first, second] = await Promise.all([ssh.getConnection(), ssh.getConnection()])
+      expect(first).toBe(second)
+      expect(state.discoveryRuns).toBe(2)
+      expect(state.cleanupRuns).toBe(2)
+    } finally { state.cleanupCode = 0; await ctx.fiber.dispose() }
+  })
+
   it('retries SSH startup on the next explicit call and shares one round with concurrent callers', async () => {
     const ctx = new Context()
     try {
@@ -182,9 +274,9 @@ describe('failed startup recovery', () => {
       const ssh = runtime(ctx)
       await expect(ssh.getConnection()).rejects.toThrow('owned remote Agent Host cleanup failed')
       await expect(ssh.getConnection()).rejects.toThrow('owned remote Agent Host cleanup failed')
-      // No new startup round: the cached rejection stays closed.
+      // Explicit demand retries verification, not startup.
       expect(state.discoveryRuns).toBe(1)
-      // The candidate loop and the outer recovery each attempt the same owned cleanup.
+      // Each explicit demand makes one bounded verification attempt.
       expect(state.cleanupRuns).toBe(2)
       // The refused loopback transport never produced an AHP session.
       expect(state.negotiations).toBe(0)

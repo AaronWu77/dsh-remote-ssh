@@ -25,7 +25,8 @@ vi.mock('node:child_process', async () => {
         if (state.sshFails) { child.stderr.write('ProxyCommand password=SECRET /home/private ws://localhost/?tkn=TOKEN'); child.close(255); return }
         child.stdout.write('DSH_SSH_READY\nlinux=Linux\n' + ['bash','base64','mkfifo','dd','mv','ps','awk','kill','rg'].map(x=>x+'='+(x==='rg'&&state.missingRg?'0':'1')).join('\n')); child.close(0)
       } else if (command.includes('find "$HOME/.vscode-server')) {
-        child.stdout.write('/private/cache/server/bin/code-server\n'); child.close(0)
+        if (!state.dedicatedEndpoint && !state.hangOwned) child.stdout.write('/private/cache/server/bin/code-server\n')
+        child.close(0)
       } else if (command.includes('exec "$dsh_code_server"')) {
         child.stdout.write('DSH_AGENT_HOST_PID=12345\nAgent host server listening on 127.0.0.1:45678\n')
       } else if (command.startsWith('cat ')) { child.stdout.write('SECRET-TOKEN'); child.close(0) }
@@ -78,7 +79,7 @@ function fixture(overrides: Partial<DiagnosticPolicy> = {}) {
   const release = vi.fn()
   const manager: Pick<RemoteSshManager, 'snapshot' | 'transportFor' | 'ownDiagnostic'> = {
     snapshot: () => ({ aliasRoot: '/unused', servers: [server], workspaces: [], retiredAliases: [], openFileMode: 'auto',
-      openFileDownloadMaxBytes: 1024, startupTimeoutMs: 10000, requestTimeoutMs: 1000, shutdownTimeoutMs: 1, connectTimeoutMs: 1000, protocolVersions: ['0.9.0'] }),
+      openFileDownloadMaxBytes: 1024, startupTimeoutMs: 10000, embeddedStartupTimeoutMs:15000, standaloneStartupTimeoutMs:30000, requestTimeoutMs: 1000, shutdownTimeoutMs: 1, connectTimeoutMs: 1000, protocolVersions: ['0.9.0'] }),
     transportFor: () => ({ executable: 'fixture-ssh', args: ['-o','BatchMode=yes'], multiplexed: false }),
     ownDiagnostic: revision => { if (revision !== 'revision') throw new Error('conflict'); return release },
   }

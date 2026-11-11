@@ -26,6 +26,8 @@ export interface Workspace {
   serverId: string
   remotePath: string
   aliasPath: string
+  /** Title the Workspace surface holds, absent until the user names it. */
+  title?: string
 }
 
 export interface RemoteDirectoryListing {
@@ -129,7 +131,13 @@ function parseServer(value: unknown): Server | undefined {
 function parseWorkspace(value: unknown): Workspace | undefined {
   if (!isRecord(value) || typeof value.id !== 'string' || typeof value.serverId !== 'string') return undefined
   if (typeof value.remotePath !== 'string' || typeof value.aliasPath !== 'string') return undefined
-  return { id: value.id, serverId: value.serverId, remotePath: value.remotePath, aliasPath: value.aliasPath }
+  return {
+    id: value.id,
+    serverId: value.serverId,
+    remotePath: value.remotePath,
+    aliasPath: value.aliasPath,
+    ...(typeof value.title === 'string' && value.title.length > 0 ? { title: value.title } : {}),
+  }
 }
 
 function parseOpenFileMode(value: unknown): OpenFileMode | undefined {

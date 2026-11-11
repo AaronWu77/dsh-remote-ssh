@@ -1,0 +1,12 @@
+{"type":"user/message","content":[{"type":"text","text":"Read readme.txt; observe a disconnected read without replay, explicitly read again, observe a disconnected command without replay, then explicitly read again."}]}
+{"type":"tool/call","callId":"first-read","name":"read","arguments":"{\"file_path\":\"readme.txt\"}"}
+{"type":"tool/result","callId":"first-read","isError":false,"content":[{"type":"text","text":"<path>/srv/project/readme.txt</path>\n<type>file</type>\n<content>\n1: hello\n\n(End of file - total 1 lines)\n</content>"}]}
+{"type":"tool/call","callId":"lost-read","name":"read","arguments":"{\"file_path\":\"readme.txt\"}"}
+{"type":"tool/result","callId":"lost-read","isError":true,"content":[{"type":"text","text":"Error: read failed for \"/srv/project/readme.txt\": transport closed"}]}
+{"type":"tool/call","callId":"explicit-read","name":"read","arguments":"{\"file_path\":\"readme.txt\"}"}
+{"type":"tool/result","callId":"explicit-read","isError":false,"content":[{"type":"text","text":"<path>/srv/project/readme.txt</path>\n<type>file</type>\n<content>\n1: hello\n\n(End of file - total 1 lines)\n</content>"}]}
+{"type":"tool/call","callId":"lost-command","name":"bash","arguments":"{\"description\":\"Run a command interrupted after dispatch\",\"command\":\"printf should-not-replay\"}"}
+{"type":"tool/result","callId":"lost-command","isError":true,"content":[{"type":"text","text":"Error: dsh-remote-ssh: terminal shutdown unobservable at ahp-terminal:/{{terminal}}"}]}
+{"type":"tool/call","callId":"after-command-read","name":"read","arguments":"{\"file_path\":\"readme.txt\"}"}
+{"type":"tool/result","callId":"after-command-read","isError":false,"content":[{"type":"text","text":"<path>/srv/project/readme.txt</path>\n<type>file</type>\n<content>\n1: hello\n\n(End of file - total 1 lines)\n</content>"}]}
+{"type":"assistant/message","content":[{"type":"text","text":"The failed read and command were not replayed. Explicit subsequent reads recovered."}]}

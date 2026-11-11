@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { constants } from 'node:fs'
-import { access, mkdir, readdir, writeFile } from 'node:fs/promises'
+import { access, mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, delimiter, dirname, isAbsolute, resolve } from 'node:path'
 import { posix } from 'node:path'
@@ -12,6 +12,8 @@ type KnownEditorId = Exclude<RemoteOpenFileMode, 'auto' | 'custom' | 'download'>
 interface EditorDefinition {
   id: KnownEditorId
   command: string
+  /** Application executable a Windows command shim launches. */
+  executableName: string
   windowsLocations: (env: NodeJS.ProcessEnv) => string[]
   macLocations: string[]
 }
@@ -21,6 +23,8 @@ interface EditorInvocation {
   executable: string
   prefixArgs: string[]
   env?: NodeJS.ProcessEnv
+  /** Whether the application can answer a headless extension probe without showing a window. */
+  probe: boolean
 }
 
 export interface RemoteOpenFileResult {
@@ -38,7 +42,7 @@ const REMOTE_SSH_EXTENSIONS = new Set([
 
 const EDITORS: Record<KnownEditorId, EditorDefinition> = {
   vscode: {
-    id: 'vscode', command: 'code',
+    id: 'vscode', command: 'code', executableName: 'Code.exe',
     windowsLocations: env => compact([
       env.LOCALAPPDATA && resolve(env.LOCALAPPDATA, 'Programs', 'Microsoft VS Code', 'Code.exe'),
       env.ProgramW6432 && resolve(env.ProgramW6432, 'Microsoft VS Code', 'Code.exe'),
@@ -48,7 +52,7 @@ const EDITORS: Record<KnownEditorId, EditorDefinition> = {
     macLocations: ['/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code'],
   },
   cursor: {
-    id: 'cursor', command: 'cursor',
+    id: 'cursor', command: 'cursor', executableName: 'Cursor.exe',
     windowsLocations: env => compact([
       env.LOCALAPPDATA && resolve(env.LOCALAPPDATA, 'Programs', 'cursor', 'Cursor.exe'),
       env.ProgramW6432 && resolve(env.ProgramW6432, 'Cursor', 'Cursor.exe'),
@@ -57,7 +61,7 @@ const EDITORS: Record<KnownEditorId, EditorDefinition> = {
     macLocations: ['/Applications/Cursor.app/Contents/Resources/app/bin/cursor'],
   },
   windsurf: {
-    id: 'windsurf', command: 'windsurf',
+    id: 'windsurf', command: 'windsurf', executableName: 'Windsurf.exe',
     windowsLocations: env => compact([
       env.LOCALAPPDATA && resolve(env.LOCALAPPDATA, 'Programs', 'Windsurf', 'Windsurf.exe'),
       env.ProgramW6432 && resolve(env.ProgramW6432, 'Windsurf', 'Windsurf.exe'),
@@ -66,7 +70,7 @@ const EDITORS: Record<KnownEditorId, EditorDefinition> = {
     macLocations: ['/Applications/Windsurf.app/Contents/Resources/app/bin/windsurf'],
   },
   vscodium: {
-    id: 'vscodium', command: 'codium',
+    id: 'vscodium', command: 'codium', executableName: 'VSCodium.exe',
     windowsLocations: env => compact([
       env.LOCALAPPDATA && resolve(env.LOCALAPPDATA, 'Programs', 'VSCodium', 'VSCodium.exe'),
       env.ProgramW6432 && resolve(env.ProgramW6432, 'VSCodium', 'VSCodium.exe'),
@@ -77,7 +81,9 @@ const EDITORS: Record<KnownEditorId, EditorDefinition> = {
 }
 
 const AUTO_ORDER: KnownEditorId[] = ['vscode', 'cursor', 'windsurf', 'vscodium']
-const editorSupport = new Map<string, Promise<boolean>>()
+/** How long one editor's extension probe is trusted before the next open re-reads it. */
+const EDITOR_PROBE_TTL_MS = 30_000
+const editorSupport = new Map<string, { at: number, value: Promise<boolean> }>()
 
 /** Open a remote path in a native VSC Remote-SSH window, downloading only as fallback. */
 export async function openRemoteFile(
@@ -182,15 +188,18 @@ async function editorCandidates(
 
 async function editorInvocation(id: KnownEditorId | 'custom', executable: string): Promise<EditorInvocation> {
   if (process.platform !== 'win32' || !executable.toLowerCase().endsWith('.exe')) {
-    return { id, executable, prefixArgs: [] }
+    return { id, executable, prefixArgs: [], probe: true }
   }
   const cli = await findWindowsVscCli(executable)
-  if (cli === undefined) return { id, executable, prefixArgs: [] }
+  // Without the headless CLI the application executable cannot list extensions; probing it
+  // would open a window, so the launch itself decides and reports a failure instead.
+  if (cli === undefined) return { id, executable, prefixArgs: [], probe: false }
   return {
     id,
     executable,
     prefixArgs: [cli],
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+    probe: true,
   }
 }
 
@@ -199,6 +208,12 @@ export async function findWindowsVscCli(executable: string): Promise<string | un
   const root = dirname(executable)
   const direct = resolve(root, 'resources', 'app', 'out', 'cli.js')
   if (await pathExists(direct)) return direct
+  // An install that keeps a pending update beside the running one lists both version
+  // directories; the shipped shim names the one this installation actually launches.
+  for (const shim of ['code.cmd', 'code.bat']) {
+    const [launched] = await shimTargets(resolve(root, 'bin', shim), /"%~dp0([^"]+?cli\.js)"/gi)
+    if (launched !== undefined) return launched
+  }
   let children: string[]
   try {
     children = (await readdir(root, { withFileTypes: true }))
@@ -218,7 +233,12 @@ export async function findWindowsVscCli(executable: string): Promise<string | un
 
 async function findEditorExecutable(editor: EditorDefinition): Promise<string | undefined> {
   const pathCandidate = await findExecutableOnPath(editor.command)
-  if (pathCandidate !== undefined) return pathCandidate
+  if (pathCandidate !== undefined) {
+    const resolved = process.platform === 'win32'
+      ? await resolveWindowsExecutable(pathCandidate, editor.executableName)
+      : pathCandidate
+    if (resolved !== undefined) return resolved
+  }
   const candidates = process.platform === 'win32'
     ? editor.windowsLocations(process.env)
     : process.platform === 'darwin' ? editor.macLocations : []
@@ -226,8 +246,40 @@ async function findEditorExecutable(editor: EditorDefinition): Promise<string | 
   return undefined
 }
 
+/**
+ * Resolve the application executable a Windows command shim launches.
+ * @param candidate - Executable or command shim found on PATH.
+ * @param executableName - Application executable expected beside the shim's parent directory.
+ * @returns The application executable, the candidate itself when it is one, or undefined.
+ */
+async function resolveWindowsExecutable(candidate: string, executableName: string): Promise<string | undefined> {
+  if (!/\.(?:cmd|bat)$/i.test(candidate)) return candidate
+  const [launched] = await shimTargets(candidate, /"%~dp0([^"]+?\.exe)"/gi)
+  if (launched !== undefined) return launched
+  const sibling = resolve(dirname(candidate), '..', executableName)
+  return await executableExists(sibling) ? sibling : undefined
+}
+
+/**
+ * Absolute targets an existing Windows command shim launches, expanded from its own location.
+ * @param shim - Command shim path, absent for installs without one.
+ * @param pattern - Global expression capturing the shim-relative argument to expand.
+ * @returns Existing absolute targets in shim order; empty when the shim is absent or unreadable.
+ */
+async function shimTargets(shim: string, pattern: RegExp): Promise<string[]> {
+  let content = ''
+  try { content = await readFile(shim, 'utf8') } catch { return [] }
+  const directory = dirname(shim)
+  const targets: string[] = []
+  for (const match of content.matchAll(pattern)) {
+    const target = resolve(directory, match[1]!.replaceAll('\\', '/'))
+    if (await pathExists(target)) targets.push(target)
+  }
+  return targets
+}
+
 async function findExecutableOnPath(command: string): Promise<string | undefined> {
-  const suffixes = process.platform === 'win32' ? ['.exe'] : ['']
+  const suffixes = process.platform === 'win32' ? ['.exe', '.cmd', '.bat'] : ['']
   for (const directory of (process.env.PATH ?? '').split(delimiter).filter(Boolean)) {
     for (const suffix of suffixes) {
       const candidate = resolve(directory, `${command}${suffix}`)
@@ -256,16 +308,16 @@ async function pathExists(path: string): Promise<boolean> {
 }
 
 async function supportsRemoteSsh(editor: EditorInvocation): Promise<boolean> {
+  if (!editor.probe) return true
   const key = JSON.stringify([editor.executable, editor.prefixArgs])
-  let pending = editorSupport.get(key)
-  if (pending === undefined) {
-    pending = capture(editor, ['--list-extensions'], 8_000).then((output) => {
-      const extensions = output.split(/\r?\n/).map(value => value.trim().toLowerCase()).filter(Boolean)
-      return extensions.some(extension => REMOTE_SSH_EXTENSIONS.has(extension) || extension.endsWith('.remote-ssh'))
-    }, () => false)
-    editorSupport.set(key, pending)
-  }
-  return pending
+  const cached = editorSupport.get(key)
+  if (cached !== undefined && Date.now() - cached.at < EDITOR_PROBE_TTL_MS) return cached.value
+  const value = capture(editor, ['--list-extensions'], 8_000).then((output) => {
+    const extensions = output.split(/\r?\n/).map(text => text.trim().toLowerCase()).filter(Boolean)
+    return extensions.some(extension => REMOTE_SSH_EXTENSIONS.has(extension) || extension.endsWith('.remote-ssh'))
+  }, () => false)
+  editorSupport.set(key, { at: Date.now(), value })
+  return value
 }
 
 async function launchEditor(editor: EditorInvocation, sshTarget: string, remotePath: string): Promise<void> {

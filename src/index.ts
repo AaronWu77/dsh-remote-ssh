@@ -6,9 +6,9 @@ import { isAbsolute, relative, resolve, sep } from 'node:path'
 import { posix } from 'node:path'
 import { AhpClient } from '@microsoft/agent-host-protocol/client'
 import { connectOwnedWebSocket, ownSshProcess } from './ssh-lifecycle.ts'
-import { AgentHostConnectionError, SshExecutionError, formatConnectionDiagnostic } from './connection-error.ts'
+import { AgentHostConnectionError, RemoteSshLifecycleError, SshProcessCleanupError, SshExecutionError, formatConnectionDiagnostic } from './connection-error.ts'
 import { Context, Service } from '@deepseek-ai/cordis'
-import { runCaptured, type CapturedProcess } from './ssh-command.ts'
+import { runCaptured } from './ssh-command.ts'
 import type { DiagnosticStageStatus } from './management-types.ts'
 
 /** Startup phase observation without exposing endpoint credentials or raw output. */
@@ -26,6 +26,10 @@ export interface Config {
   remoteCodeCommand?: string
   remoteRuntimeRoot?: string
   startupTimeoutMs?: number
+  /** Budget for one installed candidate, including tunnel and protocol initialization. */
+  embeddedStartupTimeoutMs?: number
+  /** Budget for the standalone CLI, including tunnel and protocol initialization. */
+  standaloneStartupTimeoutMs?: number
   /** Grace before forcefully stopping an owned SSH process. */
   shutdownTimeoutMs?: number
   requestTimeoutMs?: number
@@ -39,9 +43,29 @@ interface ResolvedConfig extends Config {
   remoteCodeCommand: string
   remoteRuntimeRoot: string
   startupTimeoutMs: number
+  embeddedStartupTimeoutMs: number
+  standaloneStartupTimeoutMs: number
   shutdownTimeoutMs: number
   requestTimeoutMs: number
   protocolVersions: string[]
+}
+
+interface ConnectionOwner {
+  readonly abort: AbortController
+  closed?: boolean
+  pendingStops?: Set<(graceMs: number) => Promise<void>>
+  tunnel?: ChildProcessWithoutNullStreams
+  embeddedAgentHost?: ChildProcessWithoutNullStreams
+  embeddedPid?: number
+  embeddedDataDir?: string
+  client?: AhpClient
+  shutdown?: Promise<void>
+  monitor?: Promise<void>
+  published?: boolean
+  stopping?: boolean
+  cleanup?: Promise<void>
+  cleanupFailure?: unknown
+  uncertainRemoteOwner?: boolean
 }
 
 export interface AhpConnection {
@@ -157,6 +181,8 @@ export class RemoteSshRuntime extends Service {
     remoteCodeCommand: z.string().default('code'),
     remoteRuntimeRoot: z.string().default('/tmp/dsh-remote-ssh'),
     startupTimeoutMs: z.number().default(600_000),
+    embeddedStartupTimeoutMs: z.number().default(15_000),
+    standaloneStartupTimeoutMs: z.number().default(30_000),
     shutdownTimeoutMs: z.number().default(3_000),
     requestTimeoutMs: z.number().default(30_000),
     protocolVersions: z.array(z.string()).default([...DSH_AHP_PROTOCOL_VERSIONS]),
@@ -170,21 +196,17 @@ export class RemoteSshRuntime extends Service {
   readonly remoteAccessRoot: string
 
   private ready: Promise<AhpConnection> | undefined
-  private tunnel: ChildProcessWithoutNullStreams | undefined
-  private embeddedAgentHost: ChildProcessWithoutNullStreams | undefined
-  private embeddedPid: number | undefined
-  private embeddedDataDir: string | undefined
+  private owner: ConnectionOwner = { abort: new AbortController() }
   private disposed = false
   private readonly lifetime = new AbortController()
   private readonly stopProcess = new WeakMap<ChildProcessWithoutNullStreams, (graceMs: number) => Promise<void>>()
   private startupDeadline = 0
   private closing: Promise<void> | undefined
-  private standaloneStarted = false
-  private uncertainRemoteOwner = false
+  private phaseDeadline = Infinity
 
   constructor(ctx: Context, config: Config, private readonly observer?: StartupObserver, private readonly dedicated = false) {
     super(ctx, 'remoteSsh')
-    this.config = config as ResolvedConfig
+    this.config = { ...config, embeddedStartupTimeoutMs: config.embeddedStartupTimeoutMs ?? 15_000, standaloneStartupTimeoutMs: config.standaloneStartupTimeoutMs ?? 30_000 } as ResolvedConfig
     if ((config.localWorkspace === undefined) !== (config.remoteWorkspace === undefined)) {
       throw new Error('dsh-remote-ssh: localWorkspace and remoteWorkspace must be configured together')
     }
@@ -207,30 +229,35 @@ export class RemoteSshRuntime extends Service {
     this.disposed = true
     this.lifetime.abort(new Error('dsh-remote-ssh: connection disposed'))
     this.closing = (async () => {
-      const connection = await this.ready?.catch(() => undefined)
-      try { await connection?.client.shutdown() } finally { await this.resetSshAttempt() }
+      await this.ready?.catch(() => undefined)
+      await this.resetSshAttempt()
     })()
     return this.closing
   }
 
-  /** Whether a standalone CLI returned an endpoint without an owned remote PID.
+  /** Whether startup lost its remote process ownership acknowledgement.
    * @returns True when diagnostics cannot attest remote daemon termination from SSH child exit alone.
    */
-  hasUntrackedStandalone(): boolean { return this.standaloneStarted || this.uncertainRemoteOwner }
+  hasUntrackedStandalone(): boolean { return this.owner.uncertainRemoteOwner === true }
 
   private observe(stage: 'agentHost' | 'tunnel' | 'protocol', status: 'running' | 'succeeded' | 'failed'): void {
     try { this.observer?.(stage, status) } catch (error) { this.ctx.logger.warn('Remote SSH observation callback failed', error) }
   }
 
   /**
-   * Share startup and the connected client; a later call retries a failed startup only after cleanup succeeds.
+   * Share startup and the live client; a later explicit call reconnects after verified cleanup.
    * No resource or terminal operation is replayed. Cleanup failure prevents another startup.
    * @returns The active connection, or a startup, cleanup or disposal rejection.
    */
   async getConnection(): Promise<AhpConnection> {
     if (this.disposed) throw new Error('Remote SSH service is disposing')
-    const connection = await (this.ready ??= this.startAttempt())
+    if (this.owner.published && this.owner.client?.connectionState.status !== 'connected') this.invalidate(this.owner)
+    const pending = (this.ready ??= this.startAttempt())
+    const connection = await pending
     if (this.disposed) throw new Error('Remote SSH service is disposing')
+    if (this.ready !== pending) throw new RemoteSshLifecycleError('connection_closed', 'dsh-remote-ssh: connection generation ended before readiness was delivered')
+    this.owner.abort.signal.throwIfAborted()
+    if (connection.client.connectionState.status !== 'connected') throw new RemoteSshLifecycleError('connection_closed', 'dsh-remote-ssh: connection closed before publication')
     return connection
   }
 
@@ -275,19 +302,66 @@ export class RemoteSshRuntime extends Service {
       throw new Error('dsh-remote-ssh: requestTimeoutMs must be a positive integer')
     }
     if (!Number.isSafeInteger(shutdownTimeoutMs) || shutdownTimeoutMs <= 0) throw new Error('dsh-remote-ssh: shutdownTimeoutMs must be a positive integer')
+    for (const key of ['embeddedStartupTimeoutMs', 'standaloneStartupTimeoutMs'] as const) {
+      if (!Number.isSafeInteger(this.config[key]) || this.config[key] <= 0) throw new Error('dsh-remote-ssh: ' + key + ' must be a positive integer')
+    }
     validateProtocolVersions(protocolVersions)
   }
 
   private startAttempt(): Promise<AhpConnection> {
-    this.startupDeadline = Date.now() + this.config.startupTimeoutMs
-    const pending = this.open().catch(async (error: unknown) => {
+    const pending = (async () => {
       await this.resetSshAttempt()
-      if (this.ready === pending && !this.disposed && !this.lifetime.signal.aborted) this.ready = undefined
+      this.lifetime.signal.throwIfAborted()
+      this.owner = { abort: new AbortController() }
+      this.startupDeadline = Date.now() + this.config.startupTimeoutMs
+      this.phaseDeadline = Infinity
+      const connection = await this.open()
+      this.owner.abort.signal.throwIfAborted()
+      if (connection.client.connectionState.status !== 'connected') throw new RemoteSshLifecycleError('connection_closed', 'dsh-remote-ssh: connection closed before publication')
+      this.owner.published = true
+      return connection
+    })().catch(async (error: unknown) => {
+      if (error instanceof SshProcessCleanupError) {
+        (this.owner.pendingStops ??= new Set()).add(error.retryCleanup)
+        this.owner.cleanupFailure = error
+      }
+      try {
+        if (this.owner.cleanupFailure === undefined) await this.resetSshAttempt()
+      } finally {
+        if (this.ready === pending) this.ready = undefined
+      }
       throw error
     })
-    // Construction starts eagerly; the first caller may arrive after startup has already failed.
-    void pending.catch(() => {})
+    // Eager startup failures remain observable even before the first readiness caller.
+    void pending.catch(error => this.ctx.logger.warn('Remote SSH startup failed', connectionDiagnostic(error, this.config.protocolVersions)))
     return pending
+  }
+
+  private invalidate(owner: ConnectionOwner): void {
+    if (this.owner !== owner || !owner.published || owner.stopping || this.disposed) return
+    owner.abort.abort(new RemoteSshLifecycleError('connection_closed', 'dsh-remote-ssh: active connection closed; request was not replayed'))
+    owner.published = false
+    this.ready = undefined
+    this.ctx.logger.warn('Remote SSH connection closed; the next explicit request may reconnect after cleanup. Operations are not replayed.')
+    void this.resetSshAttempt(owner).catch(error => this.ctx.logger.warn('Remote SSH cleanup failed; reconnect requires verified cleanup', connectionDiagnostic(error, this.config.protocolVersions)))
+  }
+
+  private ownProcess(child: ChildProcessWithoutNullStreams, owner = this.owner): void {
+    this.stopProcess.set(child, ownSshProcess(child))
+    child.once('close', () => {
+      if (owner.stopping) return
+      owner.closed = true
+      if (owner.tunnel === child || owner.client || owner.published) owner.abort.abort(new RemoteSshLifecycleError('connection_closed', 'dsh-remote-ssh: owned SSH process closed'))
+      this.invalidate(owner)
+    })
+  }
+
+  private async candidate<T>(budgetMs: number, run: () => Promise<T>): Promise<T> {
+    this.owner = { abort: new AbortController() }
+    this.phaseDeadline = Date.now() + Math.min(this.remainingTotalStartup(), budgetMs)
+    const owner = this.owner
+    const timer = setTimeout(() => owner.abort.abort(new RemoteSshLifecycleError('candidate_startup_timeout', 'dsh-remote-ssh: Agent Host candidate startup timed out after ' + budgetMs + 'ms')), Math.max(1, this.phaseDeadline - Date.now()))
+    try { return await run() } finally { clearTimeout(timer); this.phaseDeadline = Infinity }
   }
 
   private async open(): Promise<AhpConnection> {
@@ -305,11 +379,26 @@ export class RemoteSshRuntime extends Service {
   }
 
   private async initializeEndpoint(url: string): Promise<AhpConnection> {
-    const signal = AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(this.remainingStartup())])
+    const owner = this.owner
+    const signal = AbortSignal.any([this.lifetime.signal, owner.abort.signal, AbortSignal.timeout(this.remainingStartup())])
     const transport = await connectOwnedWebSocket(url, signal)
     const client = new AhpClient(transport, { requestTimeoutMs: this.config.requestTimeoutMs })
+    owner.client = client
+    const states = client.stateChanges()
+    owner.monitor = (async () => {
+      for await (const state of states) {
+        if (state.status === 'closed' || state.status === 'closing') { this.invalidate(owner); return }
+      }
+    })().catch(error => {
+      owner.abort.abort(error)
+      this.invalidate(owner)
+      this.ctx.logger.warn('Remote SSH state monitor failed', connectionDiagnostic(error, this.config.protocolVersions))
+    })
     client.connect()
-    const abort = (): void => { client.shutdown() }
+    const abort = (): void => {
+      owner.shutdown ??= client.shutdown()
+      void owner.shutdown.catch(error => this.ctx.logger.warn('Remote SSH client shutdown failed', connectionDiagnostic(error, this.config.protocolVersions)))
+    }
     signal.addEventListener('abort', abort, { once: true })
     try {
       signal.throwIfAborted()
@@ -331,7 +420,8 @@ export class RemoteSshRuntime extends Service {
         ...(initialized.defaultDirectory !== undefined ? { defaultDirectory: initialized.defaultDirectory } : {}),
       }
     } catch (error: unknown) {
-      await client.shutdown().catch(() => {})
+      abort()
+      if (signal.aborted) throw signal.reason
       throw error
     } finally {
       signal.removeEventListener('abort', abort)
@@ -339,93 +429,49 @@ export class RemoteSshRuntime extends Service {
   }
 
   private async openOverSsh(): Promise<AhpConnection> {
-    this.observe('agentHost', 'running')
     const diagnostics: string[] = []
-    const startupCommand = buildRemoteAgentHostCommand(this.config.remoteCodeCommand, this.runtimeRoot)
-    let startup: CapturedProcess
-    if (this.dedicated) {
-      try {
-        const endpoint = await this.startOwnedStandalone(startupCommand)
-        const url = await this.openTunnel(endpoint.port, endpoint.token)
-        return await this.connectEndpoint(url)
-      } catch (error) {
-        await this.resetSshAttempt()
-        this.remainingStartup()
-        diagnostics.push('dedicated standalone CLI: ' + connectionDiagnostic(error, this.config.protocolVersions))
-        if (this.config.remoteCodeCommand !== 'code') throw error
-      }
-      startup = { exitCode: 127, stdout: '', stderr: '' }
-    } else try {
-      startup = await runCaptured(
-        this.config.sshExecutable,
-        [...this.config.sshArgs, '-T', this.config.sshTarget, startupCommand],
-        this.remainingStartup(),
-        this.lifetime.signal,
-        this.config.shutdownTimeoutMs,
-      )
-    } catch (error: unknown) {
-      if (this.config.remoteCodeCommand !== 'code') throw error
-      diagnostics.push(`standalone CLI: ${tailDiagnostic(errorMessage(error))}`)
-      startup = { exitCode: null, stdout: '', stderr: '' }
-    }
-    const clean = stripAnsi(`${startup.stdout}\n${startup.stderr}`)
-    if (startup.exitCode !== 0 || clean.trim().length > 0) {
-      diagnostics.push(`standalone CLI (ssh exit ${startup.exitCode ?? 'unknown'}): ${tailDiagnostic(clean) || 'no output'}`)
-    }
-    const endpoint = /ws:\/\/(?:localhost|127\.0\.0\.1):(\d+)\?tkn=([^\s]+)/.exec(clean)
-    if (endpoint?.[1] !== undefined && endpoint[2] !== undefined) {
-      this.standaloneStarted = true
-      try {
-        const url = await this.openTunnel(Number(endpoint[1]), endpoint[2])
-        return await this.connectEndpoint(url)
-      } catch (error: unknown) {
-        await this.resetSshAttempt()
-        diagnostics.push(`standalone CLI: ${connectionDiagnostic(error, this.config.protocolVersions)}`)
-        if (this.config.remoteCodeCommand !== 'code') {
-          throw new Error(`dsh-remote-ssh: configured VS Code Agent Host failed\n${diagnostics.at(-1)}`, { cause: error })
+    if (this.config.remoteCodeCommand === 'code') {
+      const candidates = await this.listEmbeddedAgentHosts(diagnostics)
+      for (const [index, codeServerPath] of candidates.entries()) {
+        this.remainingTotalStartup()
+        try {
+          return await this.candidate(this.config.embeddedStartupTimeoutMs, async () => {
+            const url = await this.startEmbeddedAgentHost(codeServerPath, index)
+            return this.connectEndpoint(url)
+          })
+        } catch (error) {
+          await this.resetSshAttempt()
+          this.remainingTotalStartup()
+          diagnostics.push('embedded ' + codeServerPath + ': ' + connectionDiagnostic(error, this.config.protocolVersions))
         }
       }
+      if (candidates.length === 0) diagnostics.push('embedded VS Code Server: no installed code-server found')
     }
-
-    // A Remote - SSH server installation exposes bin/remote-cli/code, but that
-    // wrapper deliberately refuses ordinary SSH sessions. Its sibling
-    // bin/code-server can host the same official Agent Host directly. Probe
-    // every installed build newest-first: a newer VS Code may speak a protocol
-    // that the bundled AHP client has not adopted yet, while an older compatible
-    // build remains usable.
-    if (this.config.remoteCodeCommand !== 'code') {
-      throw new SshExecutionError('standalone CLI', startup.exitCode, diagnostics)
-    }
-    let candidates: string[]
+    this.remainingTotalStartup()
     try {
-      candidates = await this.listEmbeddedAgentHosts(diagnostics)
-    } catch (error: unknown) {
-      this.remainingStartup() // Cancellation and the total deadline retain their original contract.
-      if (error instanceof SshExecutionError) throw error
-      throw new SshExecutionError('embedded discovery', null, [...diagnostics, 'embedded discovery: ' + tailDiagnostic(errorMessage(error))])
+      return await this.candidate(this.config.standaloneStartupTimeoutMs, async () => {
+        this.observe('agentHost', 'running')
+        const command = buildRemoteAgentHostCommand(this.config.remoteCodeCommand, this.runtimeRoot)
+        const endpoint = await this.startOwnedStandalone(command)
+        const url = await this.openTunnel(endpoint.port, endpoint.token)
+        return this.connectEndpoint(url)
+      })
+    } catch (error) {
+      await this.resetSshAttempt()
+      this.remainingTotalStartup()
+      diagnostics.push((this.dedicated ? 'dedicated standalone CLI: ' : 'standalone CLI: ') + connectionDiagnostic(error, this.config.protocolVersions))
+      if (this.config.remoteCodeCommand !== 'code') throw error
+      if (error instanceof SshExecutionError && error.exitCode === 255 && !diagnostics.some(item => item.startsWith('embedded /'))) throw error
+      throw new AgentHostConnectionError(this.config.protocolVersions, diagnostics)
     }
-    for (const [index, codeServerPath] of candidates.entries()) {
-      this.remainingStartup()
-      try {
-        const url = await this.startEmbeddedAgentHost(codeServerPath, index)
-        return await this.connectEndpoint(url)
-      } catch (error: unknown) {
-        await this.resetSshAttempt()
-        this.remainingStartup()
-        diagnostics.push(`embedded ${codeServerPath}: ${connectionDiagnostic(error, this.config.protocolVersions)}`)
-      }
-    }
-    if (candidates.length === 0) diagnostics.push('embedded VS Code Server: no installed code-server found')
-    if (candidates.length === 0 && startup.exitCode === 255) throw new SshExecutionError('standalone CLI', startup.exitCode, diagnostics)
-    throw new AgentHostConnectionError(this.config.protocolVersions, diagnostics)
   }
 
   private async listEmbeddedAgentHosts(diagnostics: readonly string[]): Promise<string[]> {
-    const result = await runCaptured(
+    const result = await this.capture(
       this.config.sshExecutable,
       [...this.config.sshArgs, '-T', this.config.sshTarget, buildListEmbeddedAgentHostsCommand()],
       Math.min(this.remainingStartup(), this.config.requestTimeoutMs),
-      this.lifetime.signal,
+      this.startupSignal(),
       this.config.shutdownTimeoutMs,
     )
     if (result.exitCode !== 0) {
@@ -439,38 +485,38 @@ export class RemoteSshRuntime extends Service {
 
   private async startOwnedStandalone(command: string): Promise<{ port: number; token: string }> {
     const dataDir = posix.join(this.runtimeRoot, 'server')
-    this.embeddedDataDir = dataDir
+    this.owner.embeddedDataDir = dataDir
     const ownedCommand = 'printf "DSH_AGENT_HOST_PID=%s\\n" "$$"\n' + command.replace('exec "$dsh_code" agent host ',
       'exec "$dsh_code" agent host --new-instance --foreground --user-data-dir ' + quotePosix(posix.join(this.runtimeRoot, 'user')) + ' ')
     this.remainingStartup()
-    this.uncertainRemoteOwner = true
+    this.owner.uncertainRemoteOwner = true
     const child = spawn(this.config.sshExecutable, [...this.config.sshArgs, '-T', this.config.sshTarget, ownedCommand],
       { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
-    this.stopProcess.set(child, ownSshProcess(child))
-    this.embeddedAgentHost = child
-    return waitForStandaloneEndpoint(child, this.remainingStartup(), this.lifetime.signal, pid => { this.embeddedPid = pid; this.uncertainRemoteOwner = false })
+    this.ownProcess(child)
+    this.owner.embeddedAgentHost = child
+    return waitForStandaloneEndpoint(child, this.remainingStartup(), this.startupSignal(), pid => { this.owner.embeddedPid = pid; this.owner.uncertainRemoteOwner = false })
   }
 
   private async startEmbeddedAgentHost(codeServerPath: string, attempt: number): Promise<string> {
     this.observe('agentHost', 'running')
     const timeoutMs = this.remainingStartup()
-    if (this.dedicated) this.uncertainRemoteOwner = true
+    this.owner.uncertainRemoteOwner = true
     const instanceId = `${this.clientId}-${attempt}`
-    this.embeddedDataDir = posix.join(this.runtimeRoot, 'server-embedded', instanceId)
+    this.owner.embeddedDataDir = posix.join(this.runtimeRoot, 'server-embedded', instanceId)
     const child = spawn(this.config.sshExecutable, [
       ...this.config.sshArgs,
       '-T',
       this.config.sshTarget,
       buildEmbeddedAgentHostCommand(codeServerPath, instanceId, this.runtimeRoot),
     ], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
-    this.stopProcess.set(child, ownSshProcess(child))
-    this.embeddedAgentHost = child
-    const remotePort = await waitForAgentHostPort(child, timeoutMs, this.lifetime.signal, pid => { this.embeddedPid = pid; this.uncertainRemoteOwner = false })
-    const tokenResult = await runCaptured(
+    this.ownProcess(child)
+    this.owner.embeddedAgentHost = child
+    const remotePort = await waitForAgentHostPort(child, timeoutMs, this.startupSignal(), pid => { this.owner.embeddedPid = pid; this.owner.uncertainRemoteOwner = false })
+    const tokenResult = await this.capture(
       this.config.sshExecutable,
       [...this.config.sshArgs, '-T', this.config.sshTarget, `cat ${quotePosix(posix.join(this.runtimeRoot, 'server-embedded', instanceId, 'data/token'))}`],
       Math.min(this.remainingStartup(), this.config.requestTimeoutMs),
-      this.lifetime.signal,
+      this.startupSignal(),
       this.config.shutdownTimeoutMs,
     )
     const token = tokenResult.stdout.trim()
@@ -508,42 +554,78 @@ export class RemoteSshRuntime extends Service {
       `127.0.0.1:${localPort}:127.0.0.1:${remotePort}`,
       this.config.sshTarget,
     ], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
-    this.stopProcess.set(tunnel, ownSshProcess(tunnel))
-    this.tunnel = tunnel
-    await waitForPort(localPort, tunnel, timeoutMs, this.lifetime.signal)
+    this.ownProcess(tunnel)
+    this.owner.tunnel = tunnel
+    await waitForPort(localPort, tunnel, timeoutMs, this.startupSignal())
     return `ws://127.0.0.1:${localPort}?tkn=${encodeURIComponent(token)}`
   }
 
-  private remainingStartup(): number {
+  private async capture(...args: Parameters<typeof runCaptured>): ReturnType<typeof runCaptured> {
+    const owner = this.owner
+    try { return await runCaptured(...args) } catch (error) {
+      if (error instanceof SshProcessCleanupError) {
+        (owner.pendingStops ??= new Set()).add(error.retryCleanup)
+        owner.cleanupFailure = error
+      }
+      throw error
+    }
+  }
+
+  private startupSignal(): AbortSignal {
+    return AbortSignal.any([this.lifetime.signal, this.owner.abort.signal])
+  }
+
+  private remainingTotalStartup(): number {
     this.lifetime.signal.throwIfAborted()
     const remaining = this.startupDeadline - Date.now()
     if (remaining <= 0) throw new Error('dsh-remote-ssh: total Agent Host startup deadline exceeded')
     return remaining
   }
 
-  private async resetSshAttempt(): Promise<void> {
-    const pid = this.embeddedPid
-    const dataDir = this.embeddedDataDir
-    const children = [this.tunnel, this.embeddedAgentHost]
-    this.tunnel = undefined
-    this.embeddedAgentHost = undefined
-    try {
-      if (this.dedicated && this.uncertainRemoteOwner) throw new Error('Diagnostic remote process ownership is unconfirmed')
-      if (pid !== undefined && dataDir !== undefined) {
-        const cleanup = await runCaptured(
-          this.config.sshExecutable,
-          [...this.config.sshArgs, '-T', this.config.sshTarget, buildStopEmbeddedAgentHostCommand(pid, dataDir, this.config.shutdownTimeoutMs)],
-          this.config.requestTimeoutMs + 2 * this.config.shutdownTimeoutMs,
-          new AbortController().signal,
-          this.config.shutdownTimeoutMs,
-        )
-        if (cleanup.exitCode !== 0) throw new Error('dsh-remote-ssh: owned remote Agent Host cleanup failed: ' + cleanup.stderr)
+  private remainingStartup(): number {
+    const remaining = this.remainingTotalStartup()
+    this.owner.abort.signal.throwIfAborted()
+    if (this.owner.closed) throw new RemoteSshLifecycleError('connection_closed', 'dsh-remote-ssh: owned SSH process closed')
+    const phaseRemaining = this.phaseDeadline - Date.now()
+    if (phaseRemaining <= 0) throw new RemoteSshLifecycleError('candidate_startup_timeout', 'dsh-remote-ssh: Agent Host candidate startup deadline exceeded')
+    return Math.min(remaining, phaseRemaining)
+  }
+
+  private resetSshAttempt(owner = this.owner): Promise<void> {
+    if (owner.cleanup) return owner.cleanup
+    owner.stopping = true
+    owner.cleanupFailure = undefined
+    owner.cleanup = (async () => {
+      const failures: unknown[] = []
+      for (const stop of owner.pendingStops ?? []) {
+        try { await stop(this.config.shutdownTimeoutMs); owner.pendingStops?.delete(stop) } catch (error) { failures.push(error) }
       }
-      this.embeddedPid = undefined
-      this.embeddedDataDir = undefined
-    } finally {
-      await Promise.all(children.map(child => child === undefined ? undefined : this.stopProcess.get(child)?.(this.config.shutdownTimeoutMs)))
-    }
+      if (owner.client) {
+        owner.shutdown ??= owner.client.shutdown()
+        void owner.shutdown.catch(error => this.ctx.logger.warn('Remote SSH client shutdown failed', connectionDiagnostic(error, this.config.protocolVersions)))
+      }
+      try {
+        if (owner.uncertainRemoteOwner) throw new RemoteSshLifecycleError('cleanup_failed', 'Remote Agent Host process ownership is unconfirmed; refusing another startup')
+        if (owner.embeddedPid !== undefined && owner.embeddedDataDir !== undefined) {
+          const cleanup = await this.capture(this.config.sshExecutable,
+            [...this.config.sshArgs, '-T', this.config.sshTarget, buildStopEmbeddedAgentHostCommand(owner.embeddedPid, owner.embeddedDataDir, this.config.shutdownTimeoutMs)],
+            this.config.requestTimeoutMs + 2 * this.config.shutdownTimeoutMs, new AbortController().signal, this.config.shutdownTimeoutMs)
+          if (cleanup.exitCode !== 0) throw new Error('dsh-remote-ssh: owned remote Agent Host cleanup failed: ' + formatConnectionDiagnostic(cleanup.stderr, 2_000))
+        }
+        delete owner.embeddedPid
+        delete owner.embeddedDataDir
+      } catch (error) { failures.push(error) }
+      const stopped = await Promise.allSettled([owner.tunnel, owner.embeddedAgentHost].map(child => child === undefined ? undefined : this.stopProcess.get(child)?.(this.config.shutdownTimeoutMs)))
+      for (const result of stopped) if (result.status === 'rejected') failures.push(result.reason)
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try {
+        await Promise.race([Promise.all([owner.shutdown, owner.monitor]), new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new RemoteSshLifecycleError('cleanup_failed', 'dsh-remote-ssh: client shutdown did not settle; startup stopped until cleanup is verified')), this.config.requestTimeoutMs)
+        })])
+      } catch (error) { failures.push(error) } finally { clearTimeout(timer) }
+      if (failures.length) throw new RemoteSshLifecycleError('cleanup_failed', 'dsh-remote-ssh: owned cleanup failed; startup stopped: ' + failures.map(errorMessage).join('; '), { cause: new AggregateError(failures) })
+    })().catch(error => { owner.cleanupFailure = error; delete owner.cleanup; throw error })
+    return owner.cleanup
   }
 }
 
@@ -564,9 +646,9 @@ async function waitForStandaloneEndpoint(child: ChildProcessWithoutNullStreams, 
       if (pid !== undefined && endpoint?.[1] && endpoint[2]) finish(() => resolve({ port: Number(endpoint[1]), token: endpoint[2]! }))
     }
     const failed = (error: Error): void => finish(() => reject(error))
-    const closed = (code: number | null): void => finish(() => reject(new Error('Dedicated Agent Host exited: ' + code)))
+    const closed = (code: number | null): void => finish(() => reject(new SshExecutionError('standalone CLI', code, ['standalone CLI (ssh exit ' + (code ?? 'unknown') + '): ' + tailDiagnostic(output)])))
     const aborted = (): void => finish(() => reject(signal.reason))
-    const timer = setTimeout(() => finish(() => reject(new Error('Dedicated Agent Host startup timed out'))), timeoutMs)
+    const timer = setTimeout(() => finish(() => reject(new RemoteSshLifecycleError('candidate_startup_timeout', 'Standalone Agent Host startup timed out'))), timeoutMs)
     child.stdout.on('data', append); child.stderr.on('data', append); child.once('error', failed); child.once('close', closed)
     signal.addEventListener('abort', aborted, { once: true }); if (signal.aborted) aborted()
   })
@@ -608,7 +690,7 @@ async function waitForAgentHostPort(child: ChildProcessWithoutNullStreams, timeo
     child.once('close', closed)
     signal.addEventListener('abort', aborted, { once: true })
     const timer = setTimeout(() => {
-      finish(() => reject(new Error(`embedded Agent Host startup timed out after ${timeoutMs}ms\n${stripAnsi(output)}`)))
+      finish(() => reject(new RemoteSshLifecycleError('candidate_startup_timeout', `embedded Agent Host startup timed out after ${timeoutMs}ms\n${stripAnsi(output)}`)))
     }, timeoutMs)
     if (signal.aborted) aborted()
   })
@@ -687,19 +769,40 @@ async function reservePort(): Promise<number> {
 
 async function waitForPort(port: number, child: ChildProcessWithoutNullStreams, timeoutMs: number, signal: AbortSignal): Promise<void> {
   const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    signal.throwIfAborted()
-    if (child.exitCode !== null) throw new Error(`dsh-remote-ssh: SSH tunnel exited with code ${child.exitCode}`)
-    const connected = await new Promise<boolean>((resolvePromise) => {
-      const socket = createConnection({ host: '127.0.0.1', port })
-      socket.once('connect', () => { socket.destroy(); resolvePromise(true) })
-      socket.once('error', () => { socket.destroy(); resolvePromise(false) })
-    })
-    if (connected) return
-    await new Promise(resolvePromise => setTimeout(resolvePromise, 50))
-  }
-  child.kill()
-  throw new Error(`dsh-remote-ssh: SSH tunnel did not open port ${port} within ${timeoutMs}ms`)
+  const timeout = new AbortController()
+  const timer = setTimeout(() => timeout.abort(new RemoteSshLifecycleError('candidate_startup_timeout', 'dsh-remote-ssh: SSH tunnel did not open within ' + timeoutMs + 'ms')), timeoutMs)
+  const cancelled = AbortSignal.any([signal, timeout.signal])
+  try {
+    while (Date.now() < deadline) {
+      cancelled.throwIfAborted()
+      if (child.exitCode !== null) throw new RemoteSshLifecycleError('connection_closed', 'dsh-remote-ssh: SSH tunnel exited with code ' + child.exitCode)
+      const connected = await new Promise<boolean>((resolvePromise, reject) => {
+        const socket = createConnection({ host: '127.0.0.1', port })
+        const finish = (action: () => void): void => {
+          cancelled.removeEventListener('abort', aborted)
+          socket.removeListener('connect', connected)
+          socket.removeListener('error', failed)
+          socket.destroy()
+          action()
+        }
+        const connected = (): void => finish(() => resolvePromise(true))
+        const failed = (): void => finish(() => resolvePromise(false))
+        const aborted = (): void => finish(() => reject(cancelled.reason))
+        socket.once('connect', connected)
+        socket.once('error', failed)
+        cancelled.addEventListener('abort', aborted, { once: true })
+        if (cancelled.aborted) aborted()
+      })
+      if (connected) return
+      await new Promise<void>((resolvePromise, reject) => {
+        const retry = setTimeout(() => { cancelled.removeEventListener('abort', aborted); resolvePromise() }, Math.min(50, Math.max(1, deadline - Date.now())))
+        const aborted = (): void => { clearTimeout(retry); cancelled.removeEventListener('abort', aborted); reject(cancelled.reason) }
+        cancelled.addEventListener('abort', aborted, { once: true })
+        if (cancelled.aborted) aborted()
+      })
+    }
+    throw new RemoteSshLifecycleError('candidate_startup_timeout', 'dsh-remote-ssh: SSH tunnel did not open within ' + timeoutMs + 'ms')
+  } finally { clearTimeout(timer) }
 }
 
 export default RemoteSshRuntime

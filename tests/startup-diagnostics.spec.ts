@@ -16,8 +16,9 @@ vi.mock('node:child_process', async () => {
     const command = args.at(-1)!
     fixture.calls.push(command)
     queueMicrotask(() => {
+      if (command.startsWith('dsh_pid=')) { child.emit('close', 0); return }
       const discovery = command.includes('find "$HOME/.vscode-server')
-      child.stdout.write(discovery ? fixture.discoveryOutput : '')
+      child.stdout.write(discovery ? fixture.discoveryOutput : 'DSH_AGENT_HOST_PID=12345\n')
       child.stderr.write(discovery ? fixture.discoveryError : fixture.startupOutput)
       child.exitCode = discovery ? fixture.discoveryCode : fixture.startupCode
       child.emit('close', child.exitCode)
@@ -34,11 +35,11 @@ async function failure(remoteCodeCommand = 'code') {
   } finally { await ctx.fiber.dispose() }
 }
 describe('startup and discovery execution diagnostics', () => {
-  it('retains silent startup exit 255 and discovery exit 255, not missing Agent Host', async () => {
+  it('stops after discovery SSH exit 255 before attempting a CLI or reporting missing Agent Host', async () => {
     fixture.startupCode = fixture.discoveryCode = 255
     const error = await failure()
     expect(error.code).toBe('ssh_execution_failed')
-    expect(error.message).toContain('standalone CLI (ssh exit 255)')
+    expect(fixture.calls).toHaveLength(1)
     expect(error.message).toContain('embedded discovery (ssh exit 255)')
     expect(error.message).not.toContain('no installed code-server')
     expect(error).toMatchObject({ stage: 'embedded discovery', exitCode: 255 })
@@ -54,7 +55,7 @@ describe('startup and discovery execution diagnostics', () => {
     const error = await failure()
     expect(error.code).toBe('ssh_execution_failed')
     expect(error.message).toContain('embedded discovery (ssh exit 2)')
-    expect(fixture.calls).toHaveLength(2)
+    expect(fixture.calls).toHaveLength(1)
   })
   it('retains bounded redacted execution diagnostics', async () => {
     fixture.discoveryCode = 255
@@ -69,6 +70,8 @@ describe('startup and discovery execution diagnostics', () => {
     fixture.startupCode = 255
     const error = await failure('/custom/code')
     expect(error.message).toContain('ssh exit 255')
-    expect(fixture.calls).toHaveLength(1)
+    expect(fixture.calls).toHaveLength(2)
+    expect(fixture.calls[1]).toMatch(/^dsh_pid=/)
+    expect(fixture.calls.some(command => command.includes('find '))).toBe(false)
   })
 })

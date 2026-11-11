@@ -1,6 +1,7 @@
 /** Owned SSH processes and cancellable WebSocket startup. */
 import type { ChildProcess } from 'node:child_process'
 import { WebSocketTransport } from '@microsoft/agent-host-protocol/ws'
+import { SshProcessCleanupError } from './connection-error.ts'
 
 /**
  * Register process completion before startup listeners can settle.
@@ -11,12 +12,27 @@ export function ownSshProcess(child: ChildProcess): (graceMs: number) => Promise
   let closed = false
   const done = new Promise<void>(resolve => child.once('close', () => { closed = true; resolve() }))
   child.on('error', () => { /* Spawn failures also emit close; startup owns their diagnostic. */ })
-  return async graceMs => {
-    if (closed) return
-    child.kill()
-    const timer = setTimeout(() => child.kill('SIGKILL'), graceMs)
-    try { await done } finally { clearTimeout(timer) }
+  let stopping: Promise<void> | undefined
+  const stop = (graceMs: number): Promise<void> => {
+    if (closed) return Promise.resolve()
+    if (stopping) return stopping
+    stopping = (async () => {
+      child.kill()
+      let forceTimer: ReturnType<typeof setTimeout> | undefined
+      let deadlineTimer: ReturnType<typeof setTimeout> | undefined
+      try {
+        await Promise.race([done, new Promise<never>((_resolve, reject) => {
+          forceTimer = setTimeout(() => child.kill('SIGKILL'), graceMs)
+          deadlineTimer = setTimeout(() => reject(new SshProcessCleanupError(stop)), 2 * graceMs)
+        })])
+      } finally {
+        clearTimeout(forceTimer); clearTimeout(deadlineTimer)
+        stopping = undefined
+      }
+    })()
+    return stopping
   }
+  return stop
 }
 
 /**

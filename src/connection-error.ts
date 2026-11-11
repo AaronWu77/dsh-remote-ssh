@@ -1,5 +1,21 @@
 /** Agent Host candidate failures exposed without transport credentials. */
 
+/** Runtime lifecycle failures with stable handling identities and redacted summaries. */
+export class RemoteSshLifecycleError extends Error {
+  constructor(readonly code: 'connection_closed' | 'candidate_startup_timeout' | 'cleanup_failed', message: string, options?: ErrorOptions) {
+    super(formatConnectionDiagnostic(message, 16_384), options)
+    this.name = 'RemoteSshLifecycleError'
+  }
+}
+
+/** A child did not acknowledge termination; retain its stopper for explicit verification. */
+export class SshProcessCleanupError extends RemoteSshLifecycleError {
+  constructor(readonly retryCleanup: (graceMs: number) => Promise<void>) {
+    super('cleanup_failed', 'dsh-remote-ssh: owned SSH process did not close after SIGKILL; startup stopped until cleanup is verified')
+    this.name = 'SshProcessCleanupError'
+  }
+}
+
 /** SSH could not execute a startup/discovery operation; this is not evidence of a missing installation. */
 export class SshExecutionError extends Error {
   readonly code = 'ssh_execution_failed'

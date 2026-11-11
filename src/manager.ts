@@ -56,6 +56,10 @@ export interface Config {
   /** Maximum size of one downloaded fallback snapshot. */
   openFileDownloadMaxBytes?: number
   startupTimeoutMs?: number
+  /** Per installed Agent Host startup and handshake budget, in milliseconds. */
+  embeddedStartupTimeoutMs?: number
+  /** Standalone CLI startup and handshake budget, in milliseconds. */
+  standaloneStartupTimeoutMs?: number
   requestTimeoutMs?: number
   shutdownTimeoutMs?: number
   /** Bound for one SSH connect attempt, in milliseconds. */
@@ -74,6 +78,8 @@ interface ResolvedConfig {
   openFileEditorPath?: string
   openFileDownloadMaxBytes: number
   startupTimeoutMs: number
+  embeddedStartupTimeoutMs: number
+  standaloneStartupTimeoutMs: number
   requestTimeoutMs: number
   shutdownTimeoutMs: number
   connectTimeoutMs: number
@@ -176,6 +182,8 @@ export class RemoteSshManager extends Service {
     openFileEditorPath: z.string(),
     openFileDownloadMaxBytes: z.number().default(64 * 1024 * 1024),
     startupTimeoutMs: z.number().default(600_000),
+    embeddedStartupTimeoutMs: z.number().default(15_000),
+    standaloneStartupTimeoutMs: z.number().default(30_000),
     requestTimeoutMs: z.number().default(30_000),
     shutdownTimeoutMs: z.number().default(3_000),
     connectTimeoutMs: z.number().default(10_000),
@@ -622,8 +630,7 @@ export class RemoteSshManager extends Service {
     const normalized = posix.normalize(remotePath)
     const workspaceRoot = posix.normalize(route.workspace.remotePath)
     const relativePath = posix.relative(workspaceRoot, normalized)
-    const workspaceTitle = route.workspace.title
-      ?? `${route.server.label} > ${posix.basename(workspaceRoot) || workspaceRoot}`
+    const workspaceTitle = route.workspace.title ?? this.registeredTitle(route) ?? defaultWorkspaceTitle(route)
     if (relativePath === '' || (relativePath !== '..' && !relativePath.startsWith('../') && !posix.isAbsolute(relativePath))) {
       return posix.join('/', workspaceTitle, relativePath)
     }
@@ -759,11 +766,31 @@ export class RemoteSshManager extends Service {
     const registry = this.workspaceRegistry
     if (registry === undefined) return
     for (const route of this.routeByWorkspaceId.values()) {
-      const title = route.workspace.title
-        ?? `${route.server.label} > ${posix.basename(route.workspace.remotePath) || route.workspace.remotePath}`
-      const workspace = await registry.create(route.aliasPath, title)
-      if (workspace.title !== title) await workspace.setTitle(title)
+      const configured = route.workspace.title
+      const workspace = await registry.create(route.aliasPath, configured ?? defaultWorkspaceTitle(route))
+      // The Workspace surface owns every rename it accepted, so only a title stored in this
+      // catalog may replace one. Spelled without a title, a route keeps the registry's name.
+      if (configured !== undefined && workspace.title !== configured) await workspace.setTitle(configured)
     }
+  }
+
+  /**
+   * Display title one route currently presents.
+   * @param route - Published remote route.
+   * @returns The catalog title, else the name the Workspace surface holds, else undefined.
+   */
+  workspaceTitle(route: RemoteWorkspaceRoute): string | undefined {
+    return route.workspace.title ?? this.registeredTitle(route)
+  }
+
+  /**
+   * Display title the Workspace surface currently holds for this route.
+   * @param route - Published remote route whose alias names the registered Workspace.
+   * @returns The registered title, or undefined while no matching record exists.
+   */
+  private registeredTitle(route: RemoteWorkspaceRoute): string | undefined {
+    const alias = normalizeLocal(route.aliasPath)
+    return this.workspaceRegistry?.list().find(workspace => normalizeLocal(workspace.path) === alias)?.title
   }
 
   private findAlias(path: string): RemoteWorkspaceRoute | undefined {
@@ -870,6 +897,8 @@ export class RemoteSshManager extends Service {
         remoteCodeCommand: server.remoteCodeCommand ?? 'code',
         remoteAccessRoot: '/',
         startupTimeoutMs: policy.startupTimeoutMs,
+        embeddedStartupTimeoutMs: policy.embeddedStartupTimeoutMs,
+        standaloneStartupTimeoutMs: policy.standaloneStartupTimeoutMs,
         requestTimeoutMs: policy.requestTimeoutMs,
         shutdownTimeoutMs: policy.shutdownTimeoutMs,
         protocolVersions: policy.protocolVersions,
@@ -928,6 +957,8 @@ export class RemoteSshManager extends Service {
     if (config.openFileMode === 'custom' && config.openFileEditorPath === undefined) throw new Error('dsh-remote-ssh: custom openFileMode requires openFileEditorPath')
     if (!Number.isSafeInteger(config.openFileDownloadMaxBytes) || config.openFileDownloadMaxBytes <= 0) throw new Error('dsh-remote-ssh: openFileDownloadMaxBytes must be a positive integer')
     if (!Number.isSafeInteger(config.startupTimeoutMs) || config.startupTimeoutMs <= 0) throw new Error('dsh-remote-ssh: startupTimeoutMs must be a positive integer')
+    if (!Number.isSafeInteger(config.embeddedStartupTimeoutMs) || config.embeddedStartupTimeoutMs <= 0) throw new Error('dsh-remote-ssh: embeddedStartupTimeoutMs must be a positive integer')
+    if (!Number.isSafeInteger(config.standaloneStartupTimeoutMs) || config.standaloneStartupTimeoutMs <= 0) throw new Error('dsh-remote-ssh: standaloneStartupTimeoutMs must be a positive integer')
     if (!Number.isSafeInteger(config.requestTimeoutMs) || config.requestTimeoutMs <= 0) throw new Error('dsh-remote-ssh: requestTimeoutMs must be a positive integer')
     if (!Number.isSafeInteger(config.shutdownTimeoutMs) || config.shutdownTimeoutMs <= 0) throw new Error('dsh-remote-ssh: shutdownTimeoutMs must be a positive integer')
     if (!Number.isSafeInteger(config.connectTimeoutMs) || config.connectTimeoutMs <= 0) throw new Error('dsh-remote-ssh: connectTimeoutMs must be a positive integer')
@@ -958,7 +989,7 @@ export class RemoteSshManager extends Service {
 }
 
 function connectionPolicyKey(config: ResolvedConfig): string {
-  return JSON.stringify([config.sshConfigFile ?? null, config.protocolVersions, config.startupTimeoutMs, config.requestTimeoutMs, config.shutdownTimeoutMs, config.connectTimeoutMs])
+  return JSON.stringify([config.sshConfigFile ?? null, config.protocolVersions, config.startupTimeoutMs, config.embeddedStartupTimeoutMs, config.standaloneStartupTimeoutMs, config.requestTimeoutMs, config.shutdownTimeoutMs, config.connectTimeoutMs])
 }
 
 function hostRuntimeKey(server: RemoteSshServer, config: ResolvedConfig): string {
@@ -1014,6 +1045,12 @@ async function closeControlMaster(transport: RemoteSshTransport, target: string)
     child.once('error', () => { clearTimeout(timer); resolvePromise() })
     child.once('close', () => { clearTimeout(timer); resolvePromise() })
   })
+}
+
+/** Fallback display title for a remote workspace whose name neither the catalog nor the Workspace surface holds. */
+function defaultWorkspaceTitle(route: RemoteWorkspaceRoute): string {
+  const root = posix.basename(route.workspace.remotePath) || route.workspace.remotePath
+  return `${route.server.label} > ${root}`
 }
 
 function normalizeLocal(path: string): string {

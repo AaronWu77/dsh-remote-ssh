@@ -1,0 +1,64 @@
+# Bilingual-pair consistency record for README.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write README.md
+/:
+  en: 1e454aac81ac187b
+  zh: 3b150df6f5d6e47f
+/dsh-remote-ssh:
+  en: 1555ecf4c4624407
+  zh: 1555ecf4c4624407
+/dsh-remote-ssh/plugin-information:
+  en: 94642a3edf5627c5
+  zh: 680fbde5ff101ec3
+/dsh-remote-ssh/source-and-attribution:
+  en: 0416131398e7b23c
+  zh: c0fd691866a2eaf6
+/dsh-remote-ssh/isolated-0-2-1-rc-2-candidate-qualification-2026-10-17:
+  en: 849e2f3f0d74e461
+  zh: 6d5e817357c15080
+/dsh-remote-ssh/features:
+  en: 9aad6e26df335908
+  zh: 965ad73a06c973b2
+/dsh-remote-ssh/agent-host-compatibility:
+  en: 3f4082be99b1257e
+  zh: dccbeddd391ae2b3
+/dsh-remote-ssh/ssh-execution-diagnostics-and-custom-configuration:
+  en: 50473a8105f57970
+  zh: a16b01a46384351a
+/dsh-remote-ssh/install:
+  en: 20389ced1690fd88
+  zh: 5c480f85650cd8d3
+/dsh-remote-ssh/set-up-a-host:
+  en: e610e35a3fd3436c
+  zh: 1f8f932a71aa63de
+/dsh-remote-ssh/connection-diagnostics:
+  en: df925d1a8df22c2a
+  zh: b63722be0d4ea3b6
+/dsh-remote-ssh/how-workspaces-behave:
+  en: 877ee250c5c074bc
+  zh: 3303ac1b0e5d4ee7
+/dsh-remote-ssh/agent-host-updates:
+  en: 56121bc3d9fda19f
+  zh: 3ca28ab9c41efe78
+/dsh-remote-ssh/security:
+  en: e914a25b3db806d2
+  zh: 03c74e3b14adf8eb
+/dsh-remote-ssh/compatibility:
+  en: f1412756a359357a
+  zh: 05d2ab78b116129d
+/dsh-remote-ssh/compatibility/local-0-2-web-profile:
+  en: 542942ae3fc2765b
+  zh: e205781332dd1f38
+/dsh-remote-ssh/compatibility/subprocess-output-limits:
+  en: 72b3f6b9c2af455a
+  zh: f16b7e63b9464df1
+/dsh-remote-ssh/known-limitations-and-deferred-work:
+  en: fe01843a9a5dedad
+  zh: 68c260b2b07a40d6
+/dsh-remote-ssh/development:
+  en: d23dcdf14cfe07b5
+  zh: 22b0d42b2c51216f
+/dsh-remote-ssh/license:
+  en: c9d31786e2ef47b5
+  zh: f87256e1c435abc1

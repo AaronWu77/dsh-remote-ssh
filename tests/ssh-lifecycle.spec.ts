@@ -1,10 +1,28 @@
-import { spawn } from 'node:child_process'
+import { ChildProcess, spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { createServer } from 'node:net'
-import { describe, expect, it, onTestFinished } from 'vitest'
+import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import { connectOwnedWebSocket, ownSshProcess } from '../src/ssh-lifecycle.ts'
 
 describe('owned SSH startup resources', () => {
+  it('bounds an unacknowledged kill, retains the stopper, and verifies close on explicit retry', async () => {
+    vi.useFakeTimers()
+    const child = new ChildProcess()
+    const kill = vi.spyOn(child, 'kill').mockReturnValue(true)
+    const stop = ownSshProcess(child)
+    try {
+      const first = stop(50)
+      expect(stop(50)).toBe(first)
+      const failed = expect(first).rejects.toMatchObject({ code: 'cleanup_failed' })
+      await vi.advanceTimersByTimeAsync(100)
+      await failed
+      expect(kill.mock.calls).toEqual([[], ['SIGKILL']])
+      child.emit('close', null)
+      await stop(50)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally { vi.useRealTimers(); kill.mockRestore() }
+  })
+
   it('awaits child close and permits repeated teardown', async () => {
     const child = spawn(process.execPath, ['-e', "process.stdout.write('ready'); process.stdin.resume()"], { stdio: ['pipe', 'pipe', 'pipe'] })
     const stop = ownSshProcess(child)
