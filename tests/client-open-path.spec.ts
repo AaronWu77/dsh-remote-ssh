@@ -1,5 +1,4 @@
 import { Context } from '@deepseek-ai/cordis'
-import { SidebarRightTabRegistry } from '@deepseek-ai/dsh-client-ui-sidebar-right/src/client/tab-registry.ts'
 import { absoluteFileAddress, sessionFileAddress } from '@deepseek-ai/dsh-util-workspace-path'
 import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { emptyCatalog, fetchCatalogState, OPEN_FILE_PATH, request } from '../src/client/api.ts'
@@ -16,7 +15,7 @@ const remoteCatalog = { ...emptyCatalog, workspaces: [
   { id: 'dev', serverId: 'server', remotePath: '/srv/dev', aliasPath: 'D:/aliases/dev' },
 ] }
 
-function fixture(withRegistry = false) {
+function fixture() {
   const ctx = new Context()
   const original = vi.fn<Context['sidebarRight']['openResource']>()
   const originalIn = vi.fn<Context['sidebarRight']['openResourceIn']>()
@@ -32,8 +31,6 @@ function fixture(withRegistry = false) {
     }
     expect(sidebar.openResource).toBe(original)
     expect(sidebar.openResourceIn).toBe(originalIn)
-    expect(ctx.get('sidebarRightTabs')).toBeUndefined()
-    expect(tabs.entries()).toEqual([])
   })
   const scopes = new Map<string, Context>()
   const notify = vi.fn<(level: 'info' | 'error', text: string) => void>()
@@ -47,21 +44,15 @@ function fixture(withRegistry = false) {
     } },
   })
   const t: Translate = (key, params) => String(params?.reason ?? key)
-  const tabs = new SidebarRightTabRegistry(ctx)
-  if (withRegistry) ctx.effect(() => ctx.reflect.provide('sidebarRightTabs', tabs))
   installRemoteOpenPath(ctx, t)
   return {
-    ctx, sidebar, original, originalIn, tabs, notify, scopes,
+    ctx, sidebar, original, originalIn, notify, scopes,
     hold<T>(cleanupValue: T) {
       const completion = Promise.withResolvers<T>()
       completions.push({ release: () => { completion.resolve(cleanupValue) }, promise: completion.promise.then(() => undefined, () => undefined) })
       return completion
     },
   }
-}
-
-function registerNative(tabs: SidebarRightTabRegistry, kind = 'editor') {
-  return tabs.register({ id: 'dsh-better-sidebar:editor', kind, patterns: ['dsh-resource://file/**'], title: address => address })
 }
 
 describe('remote file resource navigation', () => {
@@ -72,27 +63,8 @@ describe('remote file resource navigation', () => {
     vi.mocked(request).mockResolvedValue({ kind: 'editor' })
   })
 
-  it.each([
-    ['relative Session path', sessionFileAddress('source', 'README.md')],
-    ['remote Session path', sessionFileAddress('source', '/srv/dev/README.md')],
-    ['Session alias path', sessionFileAddress('source', 'D:/aliases/dev/README.md')],
-    ['absolute alias path', absoluteFileAddress('D:/aliases/dev/README.md')],
-  ])('synchronously retains the %s and options for the native editor', (_name, address) => {
-    const { ctx, sidebar, original, tabs } = fixture(true)
-    registerNative(tabs)
-    expect(ctx.get('sidebarRightTabs')).toBe(tabs)
-    const options = { kind: 'editor', preferNewPane: true, revealIfOpened: false }
-    sidebar.openResource(address, options)
-    expect(original).toHaveBeenCalledExactlyOnceWith(address, options)
-    expect(original.mock.calls[0]?.[1]).toBe(options)
-    expect(original.mock.contexts[0]).toBe(sidebar)
-    expect(fetchCatalogState).not.toHaveBeenCalled()
-    expect(request).not.toHaveBeenCalled()
-  })
-
-  it.each([false, true])('leaves openResourceIn and its logical identity untouched (native provider: %s)', native => {
-    const { sidebar, original, originalIn, tabs } = fixture(native)
-    if (native) registerNative(tabs)
+  it('leaves openResourceIn and its logical identity untouched', () => {
+    const { sidebar, original, originalIn } = fixture()
     const address = sessionFileAddress('source', 'README.md')
     const options = { kind: 'editor', revealIfOpened: false }
     expect(sidebar.openResourceIn).toBe(originalIn)
@@ -147,41 +119,11 @@ describe('remote file resource navigation', () => {
     expect(notify).toHaveBeenCalledExactlyOnceWith('info', 'no supported VS Code-compatible editor was found')
   })
 
-  it.each(['disabled', 'different editor', 'different role'])('keeps external routing when the native editor is %s', async mode => {
-    const { sidebar, original, tabs } = fixture(true)
-    if (mode === 'disabled') registerNative(tabs)()
-    if (mode === 'different editor') tabs.register({ id: 'other:editor', kind: 'editor', title: address => address })
-    if (mode === 'different role') registerNative(tabs, 'native-preview')
-    sidebar.openResource(sessionFileAddress('source', 'README.md'))
-    expect(original).not.toHaveBeenCalled()
-    expect(fetchCatalogState).toHaveBeenCalledTimes(1)
-    await Promise.resolve()
-    await Promise.resolve()
-    expect(request).toHaveBeenCalledExactlyOnceWith(OPEN_FILE_PATH, 'POST', { workspaceId: 'dev', path: 'README.md' }, expect.any(AbortSignal))
-    expect(original).not.toHaveBeenCalled()
-  })
-
-  it('checks the effective editor at each open rather than retaining a disposed native registration', async () => {
-    const { sidebar, original, tabs } = fixture(true)
-    tabs.register({ id: 'builtin:editor', kind: 'editor', priority: 'builtin', title: address => address })
-    const disposeNative = registerNative(tabs)
-    const address = sessionFileAddress('source', 'README.md')
-    sidebar.openResource(address)
-    expect(original).toHaveBeenCalledExactlyOnceWith(address)
-    expect(fetchCatalogState).not.toHaveBeenCalled()
-    disposeNative()
-    expect(tabs.get('editor')?.id).toBe('builtin:editor')
-    sidebar.openResource(address)
-    await Promise.resolve()
-    expect(request).toHaveBeenCalledWith(OPEN_FILE_PATH, 'POST', { workspaceId: 'dev', path: 'README.md' }, expect.any(AbortSignal))
-    expect(original).toHaveBeenCalledTimes(1)
-  })
-
-  it('uses the built-in preview when the native file request fails', async () => {
+  it('uses the built-in preview when the remote open request fails', async () => {
     const { sidebar, original } = fixture()
     const fallback = Promise.withResolvers<void>()
     original.mockImplementation(() => { fallback.resolve() })
-    vi.mocked(fetchCatalogState).mockRejectedValue(new Error('native editor unavailable'))
+    vi.mocked(fetchCatalogState).mockRejectedValue(new Error('remote open unavailable'))
     const address = sessionFileAddress('source', 'src/file.ts')
     sidebar.openResource(address)
     await fallback.promise

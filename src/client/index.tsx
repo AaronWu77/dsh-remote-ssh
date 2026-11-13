@@ -13,6 +13,7 @@ import { en, zh } from './locales.ts'
 import type { RemoteSshLocaleKey } from './locales.ts'
 import type { RemoteDirectoryListing } from './api.ts'
 import { RemoteSshSettings } from './RemoteSshSettings.tsx'
+import { RemoteSshSettingsIcon } from './RemoteSshSettingsIcon.tsx'
 import { RemoteWorkspaceFlow } from './RemoteWorkspaceFlow.tsx'
 import type { RemoteWorkspaceFlowInjected } from './RemoteWorkspaceFlow.tsx'
 import { installRemoteOpenPath } from './open-path.ts'
@@ -47,9 +48,15 @@ export function apply(ctx: ClientContext): void {
       }
     },
   })
-  ctx.slots.inject('settings.section', () => ctx.slots.register({
-    name: 'settings.section', id: 'remote-ssh', order: 16, label: () => t('nav'), inject: injected,
-  }, RemoteSshSettings))
+  ctx.slots.inject('settings.section', function* () {
+    // The glyph shares its settings page's lifetime, so a collapsed section takes it down too.
+    yield ctx.slots.inject('settings.section.icon', () => ctx.slots.register({
+      name: 'settings.section.icon', id: 'remote-ssh', label: () => t('nav'),
+    }, RemoteSshSettingsIcon))
+    yield ctx.slots.register({
+      name: 'settings.section', id: 'remote-ssh', order: 16, label: () => t('nav'), inject: injected,
+    }, RemoteSshSettings)
+  })
 
   ctx.slots.inject('conversation.hero.workspace.directoryFlow', () =>
     ctx.slots.inject('sidebar.workspaces.directoryFlow', function* () {

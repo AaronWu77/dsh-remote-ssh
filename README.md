@@ -1,6 +1,6 @@
 ---
 kind: "package-bundle"
-description: "Use SSH hosts as workspaces with file, search, shell, and sidebar integration."
+description: "Use SSH hosts as workspaces with file, search, and shell integration."
 ---
 
 # dsh Remote SSH
@@ -8,7 +8,7 @@ description: "Use SSH hosts as workspaces with file, search, shell, and sidebar 
 <a id="plugin-information"></a>
 ## Plugin information
 
-Use SSH hosts as workspaces with file, search, shell, and sidebar integration.
+Use SSH hosts as workspaces with file, search, and shell integration.
 
 | Field | Value |
 |---|---|
@@ -22,13 +22,13 @@ Package identity, license and upstream declarations are maintained in [package.j
 <a id="source-and-attribution"></a>
 ## Source and attribution
 
-- [dsh-remote-ssh](https://github.com/Yan-Zero/dsh-remote-ssh) — adapted implementation; Apache-2.0; exact upstream baseline not recorded. Local DSH compatibility, Remote SSH workspace routing, diagnostics, and Better Sidebar integration. [Detailed record](https://github.com/AaronWu77/dsh-remote-ssh/blob/HEAD/UPGRADE.md).
+- [dsh-remote-ssh](https://github.com/Yan-Zero/dsh-remote-ssh) — adapted implementation; Apache-2.0; exact upstream baseline not recorded. Local DSH compatibility, Remote SSH workspace routing, and diagnostics. [Detailed record](https://github.com/AaronWu77/dsh-remote-ssh/blob/HEAD/UPGRADE.md).
 
 The maintained fork and the upstream project are different repositories. Original author, copyright, license and notice statements remain in force. A missing upstream baseline is left unrecorded rather than inferred from the local version.
 
 ## Isolated 0.2.1-rc.2 candidate qualification (2026-10-17)
 
-This qualifies the current fork candidate only; historical Linux/AHP evidence below is not an rc.2 canary. The baseline already includes explicit schema declarations at `b9c5f53`. Pair Sidebar `0.19.3-remote.6` with Remote `0.2.4-aaron.12-sidebar.6` against Host `0.2.1-rc.2 / 687f282`. Actual links resolve Cordis `4.0.5` and Schemastery `3.18.5`. DSH dev pins target rc.2; peers/engines retain alpha.2 and add rc.2, **without claiming older versions were revalidated**. The candidate root owns the final dependency freeze; this package did not run install.
+This qualifies the current fork candidate only; historical Linux/AHP evidence below is not an rc.2 canary. The baseline already includes explicit schema declarations at `b9c5f53`. Remote `0.2.4-aaron.12-sidebar.6` targets Host `0.2.1-rc.2 / 687f282`. The Better Sidebar bridge this section qualified has since been removed. Actual links resolve Cordis `4.0.5` and Schemastery `3.18.5`. DSH dev pins target rc.2; peers/engines retain alpha.2 and add rc.2, **without claiming older versions were revalidated**. The candidate root owns the final dependency freeze; this package did not run install.
 
 - Focused `--maxWorkers=1`: main lane 19 files, **162 passed**; mocked Git route group **10 passed / 7 not selected** (real local-output scripts excluded); bounded/redacted diagnostic presentation **5 passed**. Distinct total: 21 files, **177 passed / 7 unverified**. Three real in-memory Connection cases are included in the main lane. No live SSH suite ran; a live suite's self-skip must never count as a pass.
 - Covers Sidebar bridge/workspace POSIX/alias/Session symlink containment, byte reads/uploads, PTY input/resize/final output, revocation/cleanup ACK and uncertain cleanup, Git deadline/stream ownership; expectedRevision, active-run/diagnostic safety, reset confirmation and editor-only non-disconnection; mocked startup deadline/fallback/retry and successful-cleanup requirements; diagnostic bounds/token redaction. Arbitrary remote shell still requires `danger-full-access` and rejects restricted modes; no local fallback or automatic replay. Cancellation does not guarantee rollback.
@@ -54,16 +54,15 @@ Host-owned bootstrap and attachment paths map through the preserved local filesy
 - exposes binary workspace writes for artifact plugins such as `dsh-codex` image generation; raw bytes are base64-encoded only inside AHP `resourceWrite` transport;
 - keeps remote search results in POSIX path space and stores oversized tool results in a private runtime directory on the corresponding SSH host for follow-up `read`/`grep` access;
 - exposes `bash` for POSIX remote workspaces and `pwsh` for local Windows workspaces;
-- keeps conversation file links in Better Sidebar's active native editor; standalone or explicit external opening uses an installed VS Code-compatible editor through Remote SSH, with a local downloaded snapshot as fallback and a composer notice naming why the editor path was skipped;
-- integrates with Better Sidebar through a type-only `dsh-better-sidebar/workspace-provider` capability seam; when the Remote SSH manager is configured, it publishes the authoritative remote filesystem, Git and terminal backend through a lifecycle-owned router. A missing contribution fails closed with HTTP 503 rather than falling back to the local filesystem. Install the matched Remote SSH and Better Sidebar candidates only after stopping the Web service;
+- routes conversation file links for remote workspaces through Remote SSH's open-file flow, which uses an installed VS Code-compatible editor, with a local downloaded snapshot as fallback and a composer notice naming why the editor path was skipped;
 - reuses one persistent SSH/AHP host connection while each Bash call opens its own terminal channel, like a new VS Code terminal tab;
 - shares one host-scoped SSH/AHP connection across workspaces on the same server;
 - preserves readable Workspace and Session history after a remote mapping is removed, while rejecting new tool calls from the old session;
 - keeps a workspace name set in the Workspace list across restarts and catalog changes.
 
-Remote workspaces currently support Linux hosts with readable `/proc`, `ps`, `awk`, and an external `kill` executable. The Sidebar bridge defaults to GNU `realpath`, `stat`, and `base64` for canonical paths and lexical symlink metadata; an AHP server that ignores `followSymlinks` cannot supply those facts. See [the bridge migration guide](docs/upgrade-guide/v0.2.4-aaron.11/sidebar-workspace/guide.md) before choosing `pathMetadata: ahp`. Windows and non-Linux POSIX SSH hosts are not supported.
+Remote workspaces currently support Linux hosts with readable `/proc`, `ps`, `awk`, and an external `kill` executable. Windows and non-Linux POSIX SSH hosts are not supported.
 
-Windows drive and UNC file addresses select the local host unless they match an explicitly registered remote alias. On a Windows host, a collapsed WSL share address remains local as well; it is not interpreted as a POSIX path on the current SSH server. Local WSL opening is delegated to the original Sidebar handler, which keeps its path canonicalization and permissions. A genuine Linux `/wsl.localhost/…` path in a POSIX host namespace retains its remote meaning.
+Windows drive and UNC file addresses select the local host unless they match an explicitly registered remote alias. On a Windows host, a collapsed WSL share address remains local as well; it is not interpreted as a POSIX path on the current SSH server. Local WSL opening is delegated to the client's built-in navigation handler, which keeps its path canonicalization and permissions. A genuine Linux `/wsl.localhost/…` path in a POSIX host namespace retains its remote meaning.
 
 ## Agent Host compatibility
 
@@ -83,8 +82,6 @@ Manager `sshConfigFile` controls both discovery and connections: runtime startup
 
 ## Install
 
-The Sidebar `.6` pair preserves conversation file-resource identity in the active native editor instead of substituting local download paths; see the [file-navigation migration guide](docs/upgrade-guide/v0.2.4-aaron.12-sidebar.5/sidebar-file-navigation/guide.md). Filename-search protocol and limits are unchanged; this release does not optimize large-workspace search latency.
-
 This editable candidate checkout declares DSH `0.2.1-alpha.2 || 0.2.1-rc.2` peers/engines, with exact rc.2 development pins (see the qualification scope above). Build and install its local archive; the npm registry package is the upstream release, not this fork:
 
 ```sh
@@ -92,7 +89,6 @@ pnpm install --ignore-scripts
 pnpm run build
 pnpm pack --pack-destination ./artifacts
 # Stop the Web service before replacing installed bundles.
-# If Better Sidebar is installed, install its matched 0.19.3-remote.6 archive first.
 dsh plugin --profile web add file:./artifacts/dsh-remote-ssh-0.2.4-aaron.12-sidebar.6.tgz --ignore-scripts
 dsh web
 ```
@@ -137,13 +133,13 @@ Codex, Claude Code, and other automation agents should follow [INSTALL.md](INSTA
 ## Set up a host
 
 1. Configure and verify the host with ordinary OpenSSH first. Key or SSH Agent authentication is recommended.
-2. Open **Settings → Remote SSH**. The page reads the platform's default user and system SSH configuration automatically.
+2. Open **Settings → Remote SSH**. The row uses the link glyph in the Settings navigation. The page reads the platform's default user and system SSH configuration automatically.
 3. Test basic SSH access, then select **Add workspace**, choose the SSH host, and confirm a folder after its directory listing loads.
 4. Start or open a session in `<Server> > <folder>`.
 
 Open **Settings → Remote SSH → Advanced settings** to choose an absolute custom SSH configuration path or leave it blank for platform defaults. Preferences apply across this manager, not to one server. Restore defaults changes only the draft; Save validates the host file and reads back the saved revision. Active remote executions or diagnostics block SSH configuration changes, and existing connections require reset confirmation. Editor-only changes do not reset SSH connections. An interrupted save has an unknown outcome until settings are reloaded; no automatic resend or rollback is claimed.
 
-With Better Sidebar's native editor active, Sidebar file links open an in-app preview with their original Session address. Standalone navigation and explicit external opening use the first supported VS Code-compatible editor by default. The host configuration fields `remote-ssh-manager.openFileMode` and `openFileEditorPath` select that external mode and optional custom executable; they do not replace in-app previews.
+Remote file links route through Remote SSH's open-file flow: an installed VS Code-compatible editor opens them through Remote SSH by default, with a local downloaded snapshot as fallback and a composer notice naming why the editor path was skipped. The host configuration fields `remote-ssh-manager.openFileMode` and `openFileEditorPath` select that external mode and optional custom executable; local file links still use the in-app sidebar behavior.
 
 The remote host needs:
 
@@ -172,7 +168,7 @@ Remote filesystem results expose POSIX paths only. The local Workspace identity 
 
 When a tool result exceeds the inline budget, a remote session writes the complete result through AHP into that SSH host's private runtime directory and returns a remote POSIX locator. The local spill backend is used only for local sessions; an unknown or stale session never falls back to host storage. Stock `glob`/`grep` results are also normalized back into remote POSIX path space, preventing a Windows host from presenting `/root/...` as `E:\root\...`.
 
-**Delete workspace** in the sidebar removes both its Workspace registration and Remote SSH mapping. Neither the remote directory nor the local identity directory, Session logs, or message history is deleted. The mapping is retired durably before registration deletion; a failed registration deletion restores it or reports a rollback error. **Remove execution mapping** in Settings retains the Workspace registration and history. Both operations leave stale aliases non-local across restarts; old sessions remain readable but cannot execute.
+**Delete workspace** removes both its Workspace registration and Remote SSH mapping. Neither the remote directory nor the local identity directory, Session logs, or message history is deleted. The mapping is retired durably before registration deletion; a failed registration deletion restores it or reports a rollback error. **Remove execution mapping** in Settings retains the Workspace registration and history. Both operations leave stale aliases non-local across restarts; old sessions remain readable but cannot execute.
 
 Repeated selection of the same server and normalized remote directory reuses its existing mapping. Existing duplicate mappings retain their separate aliases and history; raw remote paths on the same server use the first matching mapping, while equally specific paths on different servers are rejected. Workspace creation disables repeated submissions and cancellation until the request finishes; a closed flow ignores late selection callbacks, and errors remain visible in the flow or Settings.
 
@@ -209,7 +205,7 @@ Passwords, MFA prompts, and first-use host-key confirmation are not bridged into
 
 ### Local 0.2 Web profile
 
-The enclosing local-plugin workspace pins pnpm 11.28.5; this checkout declares DSH 0.2.1-alpha.2 peers. Settings are stored through the manager’s volatile profile configuration and `settings.replace`, without replacing the running manager or its Session bindings. Local directory selection uses `uiWorkspace.listDirectory`. File resources use the address-owning Session and `sidebarRight.openResource`, with built-in preview on native-open failure.
+The enclosing local-plugin workspace pins pnpm 11.28.5; this checkout declares DSH 0.2.1-alpha.2 peers. Settings are stored through the manager’s volatile profile configuration and `settings.replace`, without replacing the running manager or its Session bindings. Local directory selection uses `uiWorkspace.listDirectory`. File resources use the address-owning Session; remote addresses route through the Remote SSH open-file flow, with built-in preview on failure.
 
 The PTC interpreter uses preserved local filesystem and subprocess providers. Its control pipe and bootstrap paths cannot run through AHP. Calls made through `tools` still use the routed providers; direct Node filesystem or process imports remain local. Restart the existing Web service after installation; refreshing a page alone does not load a new profile bundle.
 

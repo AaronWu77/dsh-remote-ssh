@@ -18,9 +18,6 @@ export default [
       spill: "src/spill.ts",
       "local-bridge": "src/local-bridge.ts",
       "shell-transparent": "src/shell-transparent.ts",
-      "sidebar-git": "src/sidebar-git.ts",
-      "sidebar-workspace": "src/sidebar-workspace.ts",
-      "sidebar-bridge": "src/sidebar-bridge.ts",
       "agent-policy": "src/agent-policy.ts",
       tui: "src/tui.ts",
       web: "src/web.ts",
@@ -34,7 +31,6 @@ export default [
     clean: true,
     deps: {
       neverBundle: [
-        "dsh-better-sidebar",
         "@microsoft/agent-host-protocol",
         "@deepseek-ai/cordis",
         "@deepseek-ai/dsh-agent",

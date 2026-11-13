@@ -58,12 +58,6 @@
       name: dsh-remote-ssh/web
       inject: [remoteSshManager]
 
-    - id: remote-ssh-sidebar-workspace
-      name: dsh-remote-ssh/sidebar-bridge
-      inject: [remoteSshManager, sidebarWorkspaceProviders]
-      config: {}
-
-
     # Both LOCAL and Remote use this plugin's in-app browser. The Host browse
     # backend supplies local listings; Remote listings come from SSH/AHP.
     - id: remote-ssh-directory-browser

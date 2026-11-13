@@ -161,9 +161,9 @@ Then:
 
 Use **Settings → Remote SSH → Advanced settings** for the custom SSH configuration path and editor preferences. Restore defaults changes only the draft until saved. Verify the saved revision by reloading preferences. Finish active remote tasks before changing SSH configuration and explicitly confirm release of existing connections; never copy private keys or SSH config contents into dsh settings.
 
-`remote-ssh-manager.openFileMode` selects auto-detection, a supported editor, a custom executable via `openFileEditorPath`, or download-only fallback. These options govern external opening and do not replace Better Sidebar in-app preview. Native opening requires a compatible Remote SSH extension in that editor.
+`remote-ssh-manager.openFileMode` selects auto-detection, a supported editor, a custom executable via `openFileEditorPath`, or download-only fallback. These options govern external opening through the Remote SSH open-file flow. Native opening requires a compatible Remote SSH extension in that editor.
 
-Use **Connection diagnostics** for staged SSH/AHP checks. Deep mode requires explicit confirmation for temporary remote resources; terminal verification is a separate option. Require successful cleanup as well as connection stages. A successful basic SSH test alone does not validate the workspace or Sidebar.
+Use **Connection diagnostics** for staged SSH/AHP checks. Deep mode requires explicit confirmation for temporary remote resources; terminal verification is a separate option. Require successful cleanup as well as connection stages. A successful basic SSH test alone does not validate the workspace or remote tool execution.
 
 ### 8. Verify transparent execution
 

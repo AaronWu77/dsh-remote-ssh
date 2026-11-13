@@ -39,7 +39,7 @@ function announceFallback(ctx: Context, sessionId: string | undefined, text: str
   ctx.logger.warn(text)
 }
 
-/** Preserve in-app navigation for Better Sidebar's active editor; otherwise route remote files using their owning Session, with preview on native-launch failure.
+/** Route remote files using their owning Session, with preview on native-launch failure.
  * @param ctx - Client context with Session and Sidebar controllers.
  * @param t - Localizer for the fallback explanation.
  */
@@ -50,7 +50,6 @@ export function installRemoteOpenPath(ctx: Context, t: Translate): void {
     const previous = sidebar.openResource
     const routed: typeof previous = (...args) => {
       if (controller.signal.aborted) return previous.apply(sidebar, args)
-      if (ctx.get('sidebarRightTabs')?.get('editor')?.id === 'dsh-better-sidebar:editor') return previous.apply(sidebar, args)
       const parsed = parseFileAddress(args[0])
       if (parsed === undefined) return previous.apply(sidebar, args)
       const open = async (): Promise<void> => {

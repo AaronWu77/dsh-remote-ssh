@@ -3,41 +3,41 @@
 # After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write README.md
 /:
-  en: 1e454aac81ac187b
-  zh: 3b150df6f5d6e47f
+  en: 673f67f68d92e5e3
+  zh: f0ea5af859dc7ceb
 /dsh-remote-ssh:
   en: 1555ecf4c4624407
   zh: 1555ecf4c4624407
 /dsh-remote-ssh/plugin-information:
-  en: 94642a3edf5627c5
-  zh: 680fbde5ff101ec3
+  en: f42c0d90aca4c886
+  zh: 1b8d5a3aba945fcf
 /dsh-remote-ssh/source-and-attribution:
-  en: 0416131398e7b23c
-  zh: c0fd691866a2eaf6
+  en: 4336c85a0bbdde80
+  zh: eaa9a0c5ca453ab3
 /dsh-remote-ssh/isolated-0-2-1-rc-2-candidate-qualification-2026-10-17:
-  en: 849e2f3f0d74e461
-  zh: 6d5e817357c15080
+  en: 8d50450a87fdf057
+  zh: a833d2031ac77e1c
 /dsh-remote-ssh/features:
-  en: 9aad6e26df335908
-  zh: 965ad73a06c973b2
+  en: 3f2143ab1df4dcc3
+  zh: 0200be198cd36b89
 /dsh-remote-ssh/agent-host-compatibility:
-  en: 3f4082be99b1257e
-  zh: dccbeddd391ae2b3
+  en: 9ee9409dffd57efd
+  zh: 2f52fb655e54ead5
 /dsh-remote-ssh/ssh-execution-diagnostics-and-custom-configuration:
   en: 50473a8105f57970
   zh: a16b01a46384351a
 /dsh-remote-ssh/install:
-  en: 20389ced1690fd88
-  zh: 5c480f85650cd8d3
+  en: d1480b3c86c634b2
+  zh: 06f65f122e33a20c
 /dsh-remote-ssh/set-up-a-host:
-  en: e610e35a3fd3436c
-  zh: 1f8f932a71aa63de
+  en: 4f526cf799aaa395
+  zh: d5082edc28bcde62
 /dsh-remote-ssh/connection-diagnostics:
   en: df925d1a8df22c2a
   zh: b63722be0d4ea3b6
 /dsh-remote-ssh/how-workspaces-behave:
-  en: 877ee250c5c074bc
-  zh: 3303ac1b0e5d4ee7
+  en: 8074b58e5feb4a62
+  zh: a82de1ab8ac5046b
 /dsh-remote-ssh/agent-host-updates:
   en: 56121bc3d9fda19f
   zh: 3ca28ab9c41efe78
@@ -48,8 +48,8 @@
   en: f1412756a359357a
   zh: 05d2ab78b116129d
 /dsh-remote-ssh/compatibility/local-0-2-web-profile:
-  en: 542942ae3fc2765b
-  zh: e205781332dd1f38
+  en: 65252f7757dd3cc2
+  zh: a89edf441b1e2612
 /dsh-remote-ssh/compatibility/subprocess-output-limits:
   en: 72b3f6b9c2af455a
   zh: f16b7e63b9464df1

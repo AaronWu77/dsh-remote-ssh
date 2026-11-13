@@ -67,18 +67,6 @@
       "types": "./lib/shell-transparent.d.ts",
       "default": "./lib/shell-transparent.js"
     },
-    "./sidebar-git": {
-      "types": "./lib/sidebar-git.d.ts",
-      "default": "./lib/sidebar-git.js"
-    },
-    "./sidebar-workspace": {
-      "types": "./lib/sidebar-workspace.d.ts",
-      "default": "./lib/sidebar-workspace.js"
-    },
-    "./sidebar-bridge": {
-      "types": "./lib/sidebar-bridge.d.ts",
-      "default": "./lib/sidebar-bridge.js"
-    },
     "./agent-policy": {
       "types": "./lib/agent-policy.d.ts",
       "default": "./lib/agent-policy.js"
@@ -120,8 +108,8 @@
         "relation": "adapted",
         "license": "Apache-2.0",
         "changes": {
-          "en": "Local DSH compatibility, Remote SSH workspace routing, diagnostics, and Better Sidebar integration.",
-          "zh": "本地 DSH 兼容、远程工作区路由、连接诊断与 Better Sidebar 集成。"
+          "en": "Local DSH compatibility, Remote SSH workspace routing, and diagnostics.",
+          "zh": "本地 DSH 兼容、远程工作区路由与连接诊断。"
         },
         "record": "https://github.com/AaronWu77/dsh-remote-ssh/blob/HEAD/UPGRADE.md"
       }
@@ -138,11 +126,6 @@
         "@deepseek-ai/dsh-client-locale"
       ],
       "platform": "web"
-    }
-  },
-  "peerDependenciesMeta": {
-    "dsh-better-sidebar": {
-      "optional": true
     }
   },
   "peerDependencies": {
@@ -176,8 +159,7 @@
     "@deepseek-ai/dsh-tool-pwsh": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.2-rc.1",
     "@deepseek-ai/dsh-tools": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.2-rc.1",
     "@deepseek-ai/dsh-workspace": "0.2.1-alpha.2 || 0.2.1-rc.2 || 0.2.2-rc.1",
-    "@deepseek-ai/schemastery": "^3.18.1-rc.1 || 3.18.5-alpha.1 || 0.2.2-rc.1",
-    "dsh-better-sidebar": "0.19.3-remote.6"
+    "@deepseek-ai/schemastery": "^3.18.1-rc.1 || 3.18.5-alpha.1 || 0.2.2-rc.1"
   },
   "dependencies": {
     "@microsoft/agent-host-protocol": "1.0.0"
@@ -247,7 +229,6 @@
     "@types/node": "^22.20.0",
     "@types/react": "~18.3.1",
     "@types/react-dom": "18.3.1",
-    "dsh-better-sidebar": "link:../better-sidebar",
     "js-yaml": "^4.1.0",
     "jsdom": "29.1.1",
     "postcss": "^8.5.26",

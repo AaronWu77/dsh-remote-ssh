@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Remote SSH",
-    "description": "Use SSH hosts as workspaces with file, search, shell, and sidebar integration."
+    "description": "Use SSH hosts as workspaces with file, search, and shell integration."
   }
 }

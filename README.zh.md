@@ -1,6 +1,6 @@
 ---
 kind: "package-bundle"
-description: "将 SSH 主机作为工作区使用，集成文件、搜索、Shell 与侧栏。"
+description: "将 SSH 主机作为工作区使用，集成文件、搜索与 Shell。"
 ---
 
 # dsh Remote SSH
@@ -8,7 +8,7 @@ description: "将 SSH 主机作为工作区使用，集成文件、搜索、Shel
 <a id="plugin-information"></a>
 ## 插件信息
 
-将 SSH 主机作为工作区使用，集成文件、搜索、Shell 与侧栏。
+将 SSH 主机作为工作区使用，集成文件、搜索与 Shell。
 
 | 字段 | 内容 |
 |---|---|
@@ -22,13 +22,13 @@ description: "将 SSH 主机作为工作区使用，集成文件、搜索、Shel
 <a id="source-and-attribution"></a>
 ## 来源与归属
 
-- [dsh-remote-ssh](https://github.com/Yan-Zero/dsh-remote-ssh) — 基于上游改造; Apache-2.0; 未记录精确上游基准。 本地 DSH 兼容、远程工作区路由、连接诊断与 Better Sidebar 集成。 [详细记录](https://github.com/AaronWu77/dsh-remote-ssh/blob/HEAD/UPGRADE.md)。
+- [dsh-remote-ssh](https://github.com/Yan-Zero/dsh-remote-ssh) — 基于上游改造; Apache-2.0; 未记录精确上游基准。 本地 DSH 兼容、远程工作区路由与连接诊断。 [详细记录](https://github.com/AaronWu77/dsh-remote-ssh/blob/HEAD/UPGRADE.md)。
 
 维护中的 fork 与上游项目属于不同仓库。原作者、版权、许可证与通知声明继续保留；缺失的上游基准不根据本地版本推断。
 
 ## 0.2.1-rc.2 隔离候选资格（2026-10-17）
 
-本节覆盖当前 fork 候选，后文历史真实 Linux/AHP 记录不是本轮 rc.2 的 canary。基线已是显式 schema 声明修复 `b9c5f53`；配对 Sidebar `0.19.3-remote.6` / Remote `0.2.4-aaron.12-sidebar.6`，Host 固定 `0.2.1-rc.2 / 687f282`。实际链接为 Cordis `4.0.5`、Schemastery `3.18.5`；DSH dev pin 为 rc.2，peer/engines 保留 alpha.2 并加入 rc.2，**不宣称旧版已重验**。候选根统一冻结依赖，本包没有另行 install。
+本节覆盖当前 fork 候选，后文历史真实 Linux/AHP 记录不是本轮 rc.2 的 canary。基线已是显式 schema 声明修复 `b9c5f53`；Remote `0.2.4-aaron.12-sidebar.6` 面向 Host `0.2.1-rc.2 / 687f282`。本节所限定的 Better Sidebar 桥接已移除。实际链接为 Cordis `4.0.5`、Schemastery `3.18.5`；DSH dev pin 为 rc.2，peer/engines 保留 alpha.2 并加入 rc.2，**不宣称旧版已重验**。候选根统一冻结依赖，本包没有另行 install。
 
 - focused `--maxWorkers=1`：主 lane 19 文件 **162 通过**；Git 仅 mock route 组 **10 通过、7 未选**（不执行真实 local output scripts）；有界脱敏诊断展示 **5 通过**。合计 21 文件 **177 通过、7 未验证**。真实内存 Connection 的 3 个用例已计入主 lane；真实 SSH/live suites 没有运行，更不能把它们的 self-skip 当通过。
 - 覆盖 Sidebar bridge/workspace 的 POSIX/alias/会话 symlink containment、字节读取/上传/PTY 输入 resize 与最终输出、撤销/cleanup ACK 与不确定清理、Git deadline/流结束所有权；expectedRevision、active-run/diagnostic 拒绝危险配置、reset 确认、editor-only 不断连；mock startup deadline/fallback/retry、cleanup 必须成功、诊断长度/令牌脱敏。任意远端 shell 的 `danger-full-access` 要求及受限模式拒绝保持不变，不回退本地、不自动重放操作；cancel 不保证 rollback。
@@ -54,16 +54,15 @@ description: "将 SSH 主机作为工作区使用，集成文件、搜索、Shel
 - 为 `dsh-codex` 生图等制品插件提供二进制工作区写入；原始字节只在 AHP `resourceWrite` 传输内部编码为 base64；
 - 远端搜索结果始终使用 POSIX 路径；超长工具结果保存在对应 SSH 主机的私有运行目录，可继续用 `read`/`grep` 分页读取；
 - POSIX 远端工作区只显示 `bash`，Windows 本机工作区只显示 `pwsh`；
-- Better Sidebar 原生编辑器启用时，对话文件链接在该编辑器内预览；单独使用或显式外部打开时，通过本机 VSC 兼容编辑器的 Remote SSH 打开，不可用时下载本地快照，并在输入区说明为何没有打开编辑器；
-- 通过只供类型导入的 `dsh-better-sidebar/workspace-provider` 能力接口接入 Better Sidebar；配置 Remote SSH manager 时，以受生命周期管理的路由发布权威远端文件系统、Git 和终端后端。缺少联动贡献时会返回 HTTP 503，不会回退本机文件系统。停止 Web 服务后才能一起安装配套 Remote SSH 和 Better Sidebar 候选包；
+- 远端工作区的对话文件链接通过 Remote SSH 的打开文件流程处理：使用本机 VSC 兼容编辑器，不可用时下载本地快照，并在输入区说明为何没有打开编辑器；
 - 每台服务器复用一条 SSH/AHP 长连接；每次 Bash 调用像 VS Code 新建终端标签页一样打开独立 channel，不会重新进行 SSH 握手；
 - 同一服务器上的多个工作区共享一个 host 级 SSH/AHP 连接；
 - 删除远端映射后保留可阅读的 Workspace 与 Session 历史，但旧会话不能继续调用工具；
 - 在工作区列表里起的名字在重启和配置变更后仍然保留。
 
-远端工作区目前支持具有可读 `/proc`、`ps`、`awk` 及外部 `kill` 可执行文件的 Linux 主机。侧栏桥接默认使用 GNU `realpath`、`stat` 和 `base64` 获取规范路径和链接本身的元数据；忽略 `followSymlinks` 的 AHP 服务端无法提供这些事实。选择 `pathMetadata: ahp` 前，请阅读[桥接迁移指南](docs/upgrade-guide/v0.2.4-aaron.11/sidebar-workspace/guide.zh.md)。不支持 Windows 或其他非 Linux POSIX SSH 主机。
+远端工作区目前支持具有可读 `/proc`、`ps`、`awk` 及外部 `kill` 可执行文件的 Linux 主机。不支持 Windows 或其他非 Linux POSIX SSH 主机。
 
-Windows 盘符与 UNC 文件地址属于本地主机，除非明确匹配已登记的远程别名。在 Windows 主机上，丢失一个前导分隔符的 WSL share 地址也保持本地含义，不会被解释为当前 SSH 服务器上的 POSIX 路径。本地 WSL 文件打开委托给原 Sidebar 处理器，继续进行路径规范化和权限检查。POSIX 主机命名空间里的真实 Linux `/wsl.localhost/…` 路径仍保留远端含义。
+Windows 盘符与 UNC 文件地址属于本地主机，除非明确匹配已登记的远程别名。在 Windows 主机上，丢失一个前导分隔符的 WSL share 地址也保持本地含义，不会被解释为当前 SSH 服务器上的 POSIX 路径。本地 WSL 文件打开委托给客户端内置导航处理器，继续进行路径规范化和权限检查。POSIX 主机命名空间里的真实 Linux `/wsl.localhost/…` 路径仍保留远端含义。
 
 ## Agent Host 兼容性
 
@@ -83,8 +82,6 @@ manager 的 `sshConfigFile` 同时控制发现和实际连接：runtime 启动�
 
 ## 安装
 
-侧栏 `.6` 配套包在当前原生编辑器内保留对话文件资源标识，不替换成本地下载路径，详见[文件导航迁移指南](docs/upgrade-guide/v0.2.4-aaron.12-sidebar.5/sidebar-file-navigation/guide.zh.md)。文件名搜索的协议与上限保持不变；此版本不优化大型工作区搜索延迟。
-
 此可编辑候选 checkout 声明 DSH `0.2.1-alpha.2 || 0.2.1-rc.2` peer/engines，开发依赖精确钉 rc.2（验证范围以上方资格说明为准）。请构建并安装本地归档；npm registry 中的是上游版本，不包含此 fork 的适配：
 
 ```sh
@@ -92,7 +89,6 @@ pnpm install --ignore-scripts
 pnpm run build
 pnpm pack --pack-destination ./artifacts
 # 替换已安装 bundle 前，先停止 Web 服务。
-# 若安装了 Better Sidebar，请先安装配套的 0.19.3-remote.6 归档。
 dsh plugin --profile web add file:./artifacts/dsh-remote-ssh-0.2.4-aaron.12-sidebar.6.tgz --ignore-scripts
 dsh web
 ```
@@ -134,13 +130,13 @@ Codex、Claude Code 及其他自动化 Agent 应直接遵循 [INSTALL.md](INSTAL
 ## 设置主机
 
 1. 先用普通 OpenSSH 配置并验证主机，推荐使用 SSH Key 或 SSH Agent 认证。
-2. 打开 **设置 → Remote SSH**。页面会自动读取平台默认的用户与系统 SSH 配置。
+2. 打开 **设置 → Remote SSH**。该行在设置导航中使用链环图标。页面会自动读取平台默认的用户与系统 SSH 配置。
 3. 测试基本 SSH 访问，然后点击 **添加工作区**、选择 SSH 主机，等待目录列表加载后确认文件夹。
 4. 在 `<服务器> > <目录>` 中新建或打开会话。
 
 打开 **设置 → Remote SSH → 高级设置**，选择自定义 SSH 配置的绝对路径，或留空使用平台默认配置。这些偏好作用于整个 manager，不限于单台服务器。“恢复默认”只改草稿；保存时验证宿主文件并回读保存版本。存在活动远端执行或诊断时会阻止 SSH 配置变更，已有连接需要确认重置。仅修改编辑器偏好不会重置 SSH 连接。中断保存后的结果须重新读取才能确认，不会自动重发或声称已经回滚。
 
-启用 Better Sidebar 原生编辑器时，侧栏文件链接保留原始会话地址并在应用内预览。单独使用时的导航和显式外部打开默认选择可用的 VSC 兼容编辑器。外部模式及可选的自定义可执行文件通过宿主配置字段 `remote-ssh-manager.openFileMode` 和 `openFileEditorPath` 指定，不会替换应用内预览。
+远端文件链接通过 Remote SSH 的打开文件流程处理：默认使用本机 VSC 兼容编辑器并通过 Remote SSH 打开，不可用时下载本地快照，并在输入区说明为何没有打开编辑器。外部模式及可选的自定义可执行文件通过宿主配置字段 `remote-ssh-manager.openFileMode` 和 `openFileEditorPath` 指定；本机文件链接仍使用应用内侧栏行为。
 
 远端主机需要：
 
@@ -169,7 +165,7 @@ Web 提供器开放 `diagnosticTimeoutMs`（120000）、`diagnosticTerminalTimeo
 
 工具结果超过内联上限时，远端会话的完整结果通过 AHP 写入该 SSH 主机的私有 runtime 目录，提示中的 locator 也是远端 POSIX 路径。本机 spill 后端仅供本机会话使用；未知或失效的会话不会回退到本机保存。`glob`/`grep` 的结果也会在官方工具执行后校正到远端 POSIX 路径，避免 Windows 宿主把 `/root/...` 显示成 `E:\root\...`。
 
-侧栏的**删除工作区**会同时移除 Workspace 注册记录和 Remote SSH 映射，不会删除远端目录、本地身份目录、Session 日志或消息历史。映射会先持久停用，再删除注册记录；注册删除失败时会恢复映射，或明确报告回滚错误。设置中的**移除执行映射**保留 Workspace 注册记录和历史。两种操作都使旧别名在重启后仍不能回退本机；旧会话仍可读取，但不能执行。
+**删除工作区**会同时移除 Workspace 注册记录和 Remote SSH 映射，不会删除远端目录、本地身份目录、Session 日志或消息历史。映射会先持久停用，再删除注册记录；注册删除失败时会恢复映射，或明确报告回滚错误。设置中的**移除执行映射**保留 Workspace 注册记录和历史。两种操作都使旧别名在重启后仍不能回退本机；旧会话仍可读取，但不能执行。
 
 重复选择相同服务器和规范化后的远端目录会复用已有映射。已有重复映射保留各自的别名和历史；同一服务器的原始远端路径使用首个匹配映射，不同服务器上同等具体的路径会被拒绝。工作区创建请求完成前会禁用重复提交和取消；关闭后的流程忽略迟到的选择回调，错误在选择流程或设置页内显示。
 
@@ -206,7 +202,7 @@ Web UI 不桥接密码、MFA 和首次 host-key 确认。请先通过 OpenSSH �
 
 ### 本地 0.2 Web profile
 
-外层本地插件工作区固定使用 pnpm 11.28.5；此 checkout 声明 DSH 0.2.1-alpha.2 peer 依赖。设置通过 manager 的 volatile profile 配置和 `settings.replace` 保存，不替换运行中的 manager，也不清除其 Session 绑定。本地目录选择使用 `uiWorkspace.listDirectory`；文件资源通过地址所属的 Session 和 `sidebarRight.openResource` 打开，原生打开失败时使用内置预览。
+外层本地插件工作区固定使用 pnpm 11.28.5；此 checkout 声明 DSH 0.2.1-alpha.2 peer 依赖。设置通过 manager 的 volatile profile 配置和 `settings.replace` 保存，不替换运行中的 manager，也不清除其 Session 绑定。本地目录选择使用 `uiWorkspace.listDirectory`；文件资源通过地址所属的 Session 处理，远端地址走 Remote SSH 的打开文件流程，失败时使用内置预览。
 
 PTC 解释器使用保留的本地文件系统和 subprocess provider：AHP 不能承载其控制管道和本机启动文件。通过 `tools` 发起的调用仍使用路由后的 provider；直接导入 Node 文件系统或进程模块的操作仍在本机执行。安装后需要重启现有 Web 服务；仅刷新页面不会加载新的 profile bundle。
 
